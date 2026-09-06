@@ -33,7 +33,11 @@ const pool = new Pool({
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const schemaPath = path.resolve(currentDir, '../server/schema.sql');
-await pool.query(readFileSync(schemaPath, 'utf8'));
+try {
+  await pool.query(readFileSync(schemaPath, 'utf8'));
+} catch (err) {
+  console.error('Schema init failed (will retry on first request):', (err as Error).message);
+}
 
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: process.env.CORS_ORIGIN ?? true, credentials: true });
@@ -44,6 +48,7 @@ mkdirSync(storageDir, { recursive: true });
 await app.register(fastifyStatic, { root: storageDir, prefix: '/storage/', decorateReply: false });
 
 // ---- Health ----
+app.get('/health', async () => ({ ok: true }));
 app.get('/api/health', async () => { await pool.query('SELECT 1'); return { ok: true }; });
 
 // ---- Auth ----
