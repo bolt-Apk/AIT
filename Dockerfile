@@ -4,19 +4,21 @@ WORKDIR /app
 
 ARG VITE_SITE_URL
 ENV VITE_SITE_URL=$VITE_SITE_URL \
-	NODE_OPTIONS=--max-old-space-size=512 \
-	NPM_CONFIG_CACHE=/tmp/npm-cache
+	NODE_OPTIONS=--max-old-space-size=384
 
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund --maxsockets=5 2>&1 || \
-    (echo "Retrying npm ci..." && rm -rf node_modules /tmp/npm-cache && npm ci --no-audit --no-fund --maxsockets=3 2>&1)
+
+# Split install into production deps first (smaller, less memory), then dev deps
+RUN npm install --no-audit --no-fund --maxsockets=2 --omit=dev && \
+    npm install --no-audit --no-fund --maxsockets=2
 
 COPY . .
 RUN npm run build
 RUN npm run server:build
 
-RUN rm -rf node_modules /tmp/npm-cache && \
-    npm ci --omit=dev --no-audit --no-fund --ignore-scripts --maxsockets=5
+# Keep only production deps for the final image
+RUN rm -rf node_modules/.cache && \
+    npm prune --production --no-audit --no-fund
 
 FROM node:20-alpine
 
