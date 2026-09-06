@@ -107,15 +107,26 @@ export default function registerAiRoutes(app: FastifyInstance, pool: Pool, stora
     if (typeof frequency_penalty === 'number') payload.frequency_penalty = Math.min(2, Math.max(-2, frequency_penalty));
     if (typeof presence_penalty === 'number') payload.presence_penalty = Math.min(2, Math.max(-2, presence_penalty));
 
-    const upstream = await fetch('https://api.aitunnel.ru/v1/chat/completions', {
-      method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch('https://api.aitunnel.ru/v1/chat/completions', {
+        method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      request.log.error(err, 'Chat upstream fetch failed');
+      return reply.code(502).send({ error: 'AI-сервис временно недоступен. Попробуйте позже.' });
+    }
     if (!upstream.ok) {
-      const errText = await upstream.text();
+      const errText = await upstream.text().catch(() => '');
       const filtered = /filtered|sensitive|safety|moderation/i.test(errText);
       return reply.code(upstream.status).send({ error: filtered ? 'Запрос отклонён системой безопасности.' : 'Не удалось получить ответ. Попробуйте другую модель.' });
     }
-    const result = await upstream.json() as any;
+    let result: any;
+    try {
+      result = await upstream.json();
+    } catch {
+      return reply.code(502).send({ error: 'Некорректный ответ от AI-сервиса.' });
+    }
 
     const promptTokens = result.usage?.prompt_tokens ?? 0;
     const completionTokens = result.usage?.completion_tokens ?? 0;
@@ -159,15 +170,26 @@ export default function registerAiRoutes(app: FastifyInstance, pool: Pool, stora
     if (size) payload.size = size;
     if (input_references?.length) payload.input_references = input_references;
 
-    const upstream = await fetch('https://api.aitunnel.ru/v1/images/generations', {
-      method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch('https://api.aitunnel.ru/v1/images/generations', {
+        method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      request.log.error(err, 'Image upstream fetch failed');
+      return reply.code(502).send({ error: 'AI-сервис временно недоступен. Попробуйте позже.' });
+    }
     if (!upstream.ok) {
-      const errText = await upstream.text();
+      const errText = await upstream.text().catch(() => '');
       const filtered = /filtered|sensitive|safety|moderation/i.test(errText);
       return reply.code(upstream.status).send({ error: filtered ? 'Запрос отклонён системой безопасности.' : 'Не удалось сгенерировать изображение.' });
     }
-    const result = await upstream.json() as any;
+    let result: any;
+    try {
+      result = await upstream.json();
+    } catch {
+      return reply.code(502).send({ error: 'Некорректный ответ от AI-сервиса.' });
+    }
     const costRubles = result.usage?.cost_rub ?? 5;
 
     // Save b64 images to disk
@@ -261,16 +283,29 @@ export default function registerAiRoutes(app: FastifyInstance, pool: Pool, stora
       if (inputRefs.length > 0) payload.input_references = inputRefs;
     }
 
-    const submitRes = await fetch('https://api.aitunnel.ru/v1/videos', {
-      method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
+    let submitRes: Response;
+    try {
+      submitRes = await fetch('https://api.aitunnel.ru/v1/videos', {
+        method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      request.log.error(err, 'Video upstream fetch failed');
+      if (!freeMode) await addTokens(pool, userId, estimatedCost);
+      return reply.code(502).send({ error: 'AI-сервис временно недоступен. Попробуйте позже.' });
+    }
 
     if (!submitRes.ok) {
-      const errText = await submitRes.text();
+      const errText = await submitRes.text().catch(() => '');
       if (!freeMode) await addTokens(pool, userId, estimatedCost);
       return reply.code(submitRes.status).send({ error: extractVideoError(errText) });
     }
-    const submitData = await submitRes.json() as any;
+    let submitData: any;
+    try {
+      submitData = await submitRes.json();
+    } catch {
+      if (!freeMode) await addTokens(pool, userId, estimatedCost);
+      return reply.code(502).send({ error: 'Некорректный ответ от AI-сервиса.' });
+    }
     if (!submitData.id) {
       if (!freeMode) await addTokens(pool, userId, estimatedCost);
       return reply.code(500).send({ error: 'Не удалось запустить генерацию видео' });
@@ -305,7 +340,12 @@ export default function registerAiRoutes(app: FastifyInstance, pool: Pool, stora
     const apiKey = await getApiKey(pool);
     if (!apiKey) return reply.code(503).send({ error: 'AI-сервис временно недоступен' });
 
-    const res = await fetch(`https://api.aitunnel.ru/v1/videos/${encodeURIComponent(generationId)}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    let res: Response;
+    try {
+      res = await fetch(`https://api.aitunnel.ru/v1/videos/${encodeURIComponent(generationId)}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    } catch {
+      return { status: 'pending', detail: 'AI-сервис временно недоступен.' };
+    }
     if (!res.ok) {
       if (res.status >= 500) return { status: 'pending', detail: 'Сервер генерации временно недоступен.' };
       return { status: 'failed', error: 'Не удалось проверить статус генерации.' };
@@ -373,11 +413,17 @@ export default function registerAiRoutes(app: FastifyInstance, pool: Pool, stora
     }
     if (instructions && model === 'gpt-4o-mini-tts') payload.instructions = instructions;
 
-    const upstream = await fetch('https://api.aitunnel.ru/v1/audio/speech', {
-      method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch('https://api.aitunnel.ru/v1/audio/speech', {
+        method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      request.log.error(err, 'TTS upstream fetch failed');
+      return reply.code(502).send({ error: 'AI-сервис временно недоступен. Попробуйте позже.' });
+    }
     if (!upstream.ok) {
-      const errText = await upstream.text();
+      const errText = await upstream.text().catch(() => '');
       const filtered = /filtered|sensitive|safety|moderation/i.test(errText);
       return reply.code(upstream.status).send({ error: filtered ? 'Текст отклонён системой безопасности.' : 'Не удалось озвучить текст.' });
     }
@@ -423,7 +469,13 @@ export default function registerAiRoutes(app: FastifyInstance, pool: Pool, stora
     form.append('model', model);
     if (language) form.append('language', language);
 
-    const upstream = await fetch('https://api.aitunnel.ru/v1/audio/transcriptions', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form });
+    let upstream: Response;
+    try {
+      upstream = await fetch('https://api.aitunnel.ru/v1/audio/transcriptions', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form });
+    } catch (err) {
+      request.log.error(err, 'STT upstream fetch failed');
+      return reply.code(502).send({ error: 'AI-сервис временно недоступен. Попробуйте позже.' });
+    }
     const result = await upstream.json().catch(() => ({})) as any;
     if (!upstream.ok) return reply.code(upstream.status).send({ error: 'Не удалось распознать речь' });
 
