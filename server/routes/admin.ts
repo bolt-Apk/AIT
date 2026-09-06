@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
-import { requireAdmin } from '../lib/auth.js';
+import { requireAdmin, getUserId } from '../lib/auth.js';
 import { addTokens } from '../lib/billing.js';
 
 export default function registerAdminRoutes(app: FastifyInstance, pool: Pool) {
