@@ -1,4 +1,4 @@
-FROM node:22-alpine AS build
+FROM node:20-alpine AS build
 
 WORKDIR /app
 
@@ -8,15 +8,17 @@ ENV VITE_SITE_URL=$VITE_SITE_URL \
 	NPM_CONFIG_CACHE=/tmp/npm-cache
 
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm ci --no-audit --no-fund --maxsockets=5 2>&1 || \
+    (echo "Retrying npm ci..." && rm -rf node_modules /tmp/npm-cache && npm ci --no-audit --no-fund --maxsockets=3 2>&1)
 
 COPY . .
 RUN npm run build
 RUN npm run server:build
 
-RUN rm -rf node_modules && npm ci --omit=dev --no-audit --no-fund --ignore-scripts
+RUN rm -rf node_modules /tmp/npm-cache && \
+    npm ci --omit=dev --no-audit --no-fund --ignore-scripts --maxsockets=5
 
-FROM node:22-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
