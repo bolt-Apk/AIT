@@ -43,8 +43,14 @@ const app = Fastify({ logger: true });
 await app.register(cors, { origin: process.env.CORS_ORIGIN ?? true, credentials: true });
 await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
 
-const storageDir = path.resolve(process.env.STORAGE_DIR ?? path.resolve(currentDir, '../storage'));
-mkdirSync(storageDir, { recursive: true });
+let storageDir = path.resolve(process.env.STORAGE_DIR ?? path.resolve(currentDir, '../storage'));
+try {
+  mkdirSync(storageDir, { recursive: true });
+} catch {
+  storageDir = '/tmp/app-storage';
+  console.warn(`Cannot create original storage dir, falling back to ${storageDir}`);
+  mkdirSync(storageDir, { recursive: true });
+}
 await app.register(fastifyStatic, { root: storageDir, prefix: '/storage/', decorateReply: false });
 
 // ---- Health ----
