@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        VITE_SITE_URL: ${VITE_SITE_URL:-https://avirond.com}
+        VITE_SITE_URL: ${VITE_SITE_URL:-https://aitaip.ru}
     ports:
       - "${PORT:-3000}:3000"
     environment:
@@ -18,7 +18,7 @@ services:
       - POSTGRESQL_SSL=${POSTGRESQL_SSL:-true}
       - PGSSLROOTCERT=/app/certs/root.crt
       - STORAGE_DIR=/app/storage
-      - CORS_ORIGIN=${CORS_ORIGIN:-https://avirond.com}
+      - CORS_ORIGIN=${CORS_ORIGIN:-https://aitaip.ru}
       - AITUNNEL_API_KEY=${AITUNNEL_API_KEY}
       - YOOKASSA_SHOP_ID=${YOOKASSA_SHOP_ID}
       - YOOKASSA_SECRET_KEY=${YOOKASSA_SECRET_KEY}
