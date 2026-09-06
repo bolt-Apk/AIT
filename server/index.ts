@@ -19,7 +19,12 @@ if (!process.env.JWT_SECRET) console.warn('JWT_SECRET is not set; using a develo
 
 const sslEnabled = process.env.POSTGRESQL_SSL === 'true';
 const sslRootCert = process.env.PGSSLROOTCERT;
-if (sslEnabled && !sslRootCert) throw new Error('PGSSLROOTCERT is required when POSTGRESQL_SSL=true');
+
+function buildSslConfig() {
+  if (!sslEnabled) return undefined;
+  if (sslRootCert) return { rejectUnauthorized: true, ca: readFileSync(sslRootCert, 'utf8') };
+  return { rejectUnauthorized: false };
+}
 
 const pool = new Pool({
   host: process.env.POSTGRESQL_HOST,
@@ -27,7 +32,7 @@ const pool = new Pool({
   user: process.env.POSTGRESQL_USER,
   password: process.env.POSTGRESQL_PASSWORD,
   database: process.env.POSTGRESQL_DBNAME,
-  ssl: sslEnabled ? { rejectUnauthorized: true, ca: readFileSync(sslRootCert!, 'utf8') } : undefined,
+  ssl: buildSslConfig(),
   max: 10,
 });
 
