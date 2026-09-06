@@ -3,16 +3,17 @@ FROM node:22-alpine AS build
 WORKDIR /app
 
 ARG VITE_SITE_URL
-ENV VITE_SITE_URL=$VITE_SITE_URL
+ENV VITE_SITE_URL=$VITE_SITE_URL \
+	NODE_OPTIONS=--max-old-space-size=512
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm install --no-audit --no-fund
 
 COPY . .
 RUN npm run build
 RUN npm run server:build
 
-RUN rm -rf node_modules && npm ci --omit=dev --ignore-scripts
+RUN rm -rf node_modules && npm install --omit=dev --no-audit --no-fund --ignore-scripts
 
 FROM node:22-alpine
 
