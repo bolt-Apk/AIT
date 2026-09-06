@@ -12,6 +12,8 @@ COPY . .
 RUN npm run build
 RUN npm run server:build
 
+RUN rm -rf node_modules && npm ci --omit=dev --ignore-scripts
+
 FROM node:22-alpine
 
 WORKDIR /app
@@ -21,12 +23,11 @@ RUN apk add --no-cache ca-certificates wget \
 	&& wget -qO /app/certs/root.crt https://st.timeweb.com/cloud-static/ca.crt \
 	&& chmod 0600 /app/certs/root.crt
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-
+COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server-dist ./server-dist
 COPY --from=build /app/server/schema.sql ./server/schema.sql
+COPY --from=build /app/package.json ./package.json
 
 ENV NODE_ENV=production \
 	PORT=3000 \
