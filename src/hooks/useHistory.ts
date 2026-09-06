@@ -104,16 +104,8 @@ export function useHistory() {
   }, []);
 
   const loadTTSHistory = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('tts_history')
-      .select('id, text, model, voice, audio_url, created_at')
-      .order('created_at', { ascending: true })
-      .limit(100);
-    if (error) {
-      console.error('Failed to load TTS history:', error.message);
-      return [];
-    }
-    return (data || []) as DBTTSEntry[];
+    try { return await getHistory<DBTTSEntry>('tts'); }
+    catch (error) { console.error('Failed to load TTS history:', error); return []; }
   }, []);
 
   const saveTTSEntry = useCallback(async (entry: {
