@@ -584,9 +584,9 @@ export default function AuthPage() {
                           onFocus={() => setPassFocused(true)}
                           onBlur={() => setPassFocused(false)}
                           required
-                          minLength={6}
+                          minLength={8}
                           className="w-full bg-transparent text-sm text-slate-800 dark:text-gray-100 placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none"
-                          placeholder={isLogin ? 'Введите пароль' : 'Минимум 6 символов'}
+                          placeholder={isLogin ? 'Введите пароль' : 'Минимум 8 символов'}
                         />
                         <button
                           type="button"
@@ -628,7 +628,7 @@ export default function AuthPage() {
                             onFocus={() => setConfirmFocused(true)}
                             onBlur={() => setConfirmFocused(false)}
                             required
-                            minLength={6}
+                            minLength={8}
                             className="w-full bg-transparent text-sm text-slate-800 dark:text-gray-100 placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none"
                             placeholder="Повторите пароль"
                           />

@@ -72,7 +72,7 @@ app.post<{ Body: { email?: string; password?: string } }>('/api/auth/register', 
     const result = await pool.query('INSERT INTO app_users (email, password_hash) VALUES ($1, $2) RETURNING id, email, display_name', [email, passwordHash]);
     const user = result.rows[0];
     await pool.query('INSERT INTO user_balances (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [user.id]);
-    return reply.code(201).send({ user, token: issueToken(user.id) });
+    return reply.code(201).send({ user, access_token: issueToken(user.id) });
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'code' in error && error.code === '23505') return reply.code(409).send({ error: 'Не удалось создать аккаунт с этими данными' });
     throw error;
@@ -88,7 +88,7 @@ app.post<{ Body: { email?: string; password?: string } }>('/api/auth/login', asy
   // Check ban
   const { rows: [bal] } = await pool.query('SELECT banned_at, ban_reason FROM user_balances WHERE user_id = $1', [user.id]);
   if (bal?.banned_at) return reply.code(403).send({ error: `Аккаунт заблокирован: ${bal.ban_reason || 'нарушение правил'}` });
-  return { user: { id: user.id, email: user.email }, token: issueToken(user.id) };
+  return { user: { id: user.id, email: user.email }, access_token: issueToken(user.id) };
 });
 
 app.get('/api/auth/me', async (request, reply) => {
