@@ -28,12 +28,11 @@ import {
   ZoomIn,
   Copy,
 } from 'lucide-react';
-import { getFreshSession, supabase } from '@/lib/supabase';
-import { getBalance } from '@/lib/api';
+import { getBalance, uploadVideoInput, chatCompletion, generateImage as apiGenerateImage, submitVideo as apiSubmitVideo, pollVideo as apiPollVideo, textToSpeech } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { VIDEO_MODELS } from '@/components/VideoModelSelector';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+
 
 interface Scene {
   id: string;
@@ -226,52 +225,31 @@ function friendlyError(raw: string): string {
   return raw;
 }
 
-async function callAPI(path: string, body: Record<string, unknown>, timeout = 120_000) {
-  const session = await getFreshSession();
-  if (!session) throw new Error('Необходима авторизация');
-  const endpoint = path === 'chat-completion'
-    ? '/api/ai/chat'
-    : path === 'generate-image'
-      ? '/api/ai/image'
-      : '/api/ai/video';
-  const res = await fetch(`${import.meta.env.VITE_API_URL ?? ''}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeout),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(friendlyError(data.error || `Ошибка (${res.status})`));
-  return data;
+async function callAPI(path: string, body: Record<string, unknown>, _timeout = 120_000) {
+  try {
+    if (path === 'chat-completion') return await chatCompletion(body);
+    if (path === 'generate-image') return await apiGenerateImage(body);
+    if (path === 'generate-video') return await apiSubmitVideo(body);
+    throw new Error(`Unknown API path: ${path}`);
+  } catch (e) {
+    throw new Error(friendlyError((e as Error).message || 'Ошибка'));
+  }
 }
 
-async function pollVideo(generationId: string, estimatedCost: number): Promise<string> {
+async function pollVideoLoop(generationId: string, _estimatedCost: number): Promise<string> {
   const maxAttempts = 180;
   let consecutiveErrors = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, 5000));
-    const session = await getFreshSession();
-    if (!session) throw new Error('Сессия истекла');
-    const url = `${import.meta.env.VITE_API_URL ?? ''}/api/ai/video?id=${encodeURIComponent(generationId)}&estimated_cost=${estimatedCost}`;
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-    });
-    if (!res.ok) {
+    try {
+      const data = await apiPollVideo(generationId);
+      consecutiveErrors = 0;
+      if (data.status === 'completed' && data.url) return data.url;
+      if (data.status === 'failed') throw new Error(friendlyError(data.error || 'Генерация видео не удалась'));
+    } catch (e) {
       consecutiveErrors++;
-      if (consecutiveErrors >= 3) {
-        const errBody = await res.json().catch(() => null);
-        throw new Error(errBody?.error || `Ошибка сервера (${res.status})`);
-      }
-      continue;
+      if (consecutiveErrors >= 3) throw e;
     }
-    consecutiveErrors = 0;
-    const data = await res.json();
-    if (data.status === 'completed' && data.url) return data.url;
-    if (data.status === 'failed') throw new Error(friendlyError(data.error || 'Генерация видео не удалась'));
   }
   throw new Error('Превышено время ожидания генерации видео');
 }
@@ -598,14 +576,9 @@ ${styleHint}`;
     setReferenceImages(prev => [...prev, { id, url: localUrl, uploading: true }]);
 
     try {
-      const session = await getFreshSession();
-      if (!session) throw new Error('Auth');
       const ext = file.name.split('.').pop() || 'png';
-      const path = `${session.user.id}/ref-${id}.${ext}`;
-      const { error } = await supabase.storage.from('generated-images').upload(path, file, { contentType: file.type });
-      if (error) throw error;
-      const { data: urlData } = supabase.storage.from('generated-images').getPublicUrl(path);
-      setReferenceImages(prev => prev.map(r => r.id === id ? { ...r, url: urlData.publicUrl, uploading: false } : r));
+      const { url } = await uploadVideoInput(file, `ref-${id}.${ext}`);
+      setReferenceImages(prev => prev.map(r => r.id === id ? { ...r, url, uploading: false } : r));
     } catch {
       setReferenceImages(prev => prev.filter(r => r.id !== id));
     }
@@ -686,18 +659,11 @@ ${styleHint}`;
     try {
       let frameUrl = scene.imageUrl;
       if (frameUrl.startsWith('blob:') || frameUrl.startsWith('data:')) {
-        const session = await getFreshSession();
-        if (!session) throw new Error('Необходима авторизация');
         const resp = await fetch(frameUrl);
         const blob = await resp.blob();
         const ext = blob.type.includes('png') ? 'png' : 'jpg';
-        const path = `${session.user.id}/${Date.now()}_${sceneId}.${ext}`;
-        const { data: upData, error: upErr } = await supabase.storage
-          .from('video-inputs')
-          .upload(path, blob, { contentType: blob.type, upsert: true });
-        if (upErr || !upData?.path) throw new Error('Не удалось загрузить изображение');
-        const { data: pubData } = supabase.storage.from('video-inputs').getPublicUrl(upData.path);
-        frameUrl = pubData.publicUrl;
+        const { url } = await uploadVideoInput(blob, `${Date.now()}_${sceneId}.${ext}`);
+        frameUrl = url;
       }
 
       const payload: Record<string, unknown> = {
@@ -716,7 +682,7 @@ ${styleHint}`;
       const estimatedCost = result.estimated_cost || 30;
       updateScene(sceneId, { videoGenerationId: generationId });
 
-      const videoUrl = await pollVideo(generationId, estimatedCost);
+      const videoUrl = await pollVideoLoop(generationId, estimatedCost);
       updateScene(sceneId, { videoUrl, videoLoading: false });
     } catch (e) {
       updateScene(sceneId, { videoLoading: false, videoError: (e as Error).message });
@@ -734,34 +700,12 @@ ${styleHint}`;
     updateScene(sceneId, { audioLoading: true, audioError: undefined });
 
     try {
-      const session = await getFreshSession();
-      if (!session) throw new Error('Необходима авторизация');
-
-      const res = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/tts`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          text: scene.voiceLine,
-          model: ttsModel,
-          voice: ttsVoice,
-        }),
-        signal: AbortSignal.timeout(60_000),
+      const { audioBlob } = await textToSpeech({
+        text: scene.voiceLine,
+        model: ttsModel,
+        voice: ttsVoice,
       });
-
-      if (!res.ok) {
-        const ct = res.headers.get('Content-Type') || '';
-        if (ct.includes('application/json')) {
-          const err = await res.json();
-          throw new Error(err.error || `Ошибка (${res.status})`);
-        }
-        throw new Error(`Ошибка (${res.status})`);
-      }
-
-      const blob = await res.blob();
-      const audioUrl = URL.createObjectURL(blob);
+      const audioUrl = URL.createObjectURL(audioBlob);
       updateScene(sceneId, { audioUrl, audioLoading: false });
     } catch (e) {
       updateScene(sceneId, { audioLoading: false, audioError: (e as Error).message });
@@ -778,26 +722,17 @@ ${styleHint}`;
     if (!scene?.voiceLine?.trim() || scene.enhancingVoice) return;
     updateScene(sceneId, { enhancingVoice: true });
     try {
-      const session = await getFreshSession();
-      if (!session) { updateScene(sceneId, { enhancingVoice: false }); return; }
-      const res = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/chat`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: 'Ты профессиональный копирайтер для рекламных роликов. Улучши текст озвучки: сделай его более живым, эмоциональным и цепляющим для зрителя, сохраняя смысл и длину (максимум ±20% слов). Верни ТОЛЬКО улучшенный текст, без кавычек и пояснений. Пиши на том же языке, что и исходный текст.' },
-            { role: 'user', content: scene.voiceLine },
-          ],
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const enhanced = data.choices?.[0]?.message?.content?.trim();
-        const isRefusal = enhanced && /(извинит|к сожалению|я не могу|не могу помочь|i can'?t|i'?m sorry|sorry,? i|i'?m unable|i cannot|i'?m not able|can'?t assist|can'?t help)/i.test(enhanced);
-        if (enhanced && !isRefusal) {
-          updateScene(sceneId, { voiceLine: enhanced });
-        }
+      const data = await chatCompletion({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'Ты профессиональный копирайтер для рекламных роликов. Улучши текст озвучки: сделай его более живым, эмоциональным и цепляющим для зрителя, сохраняя смысл и длину (максимум ±20% слов). Верни ТОЛЬКО улучшенный текст, без кавычек и пояснений. Пиши на том же языке, что и исходный текст.' },
+          { role: 'user', content: scene.voiceLine },
+        ],
+      }) as any;
+      const enhanced = data.choices?.[0]?.message?.content?.trim();
+      const isRefusal = enhanced && /(извинит|к сожалению|я не могу|не могу помочь|i can'?t|i'?m sorry|sorry,? i|i'?m unable|i cannot|i'?m not able|can'?t assist|can'?t help)/i.test(enhanced);
+      if (enhanced && !isRefusal) {
+        updateScene(sceneId, { voiceLine: enhanced });
       }
     } catch { /* ignore */ }
     updateScene(sceneId, { enhancingVoice: false });
@@ -809,9 +744,6 @@ ${styleHint}`;
     const raw = (scene?.videoPrompt || scene?.visual || '').trim();
     updateScene(sceneId, { enhancingVideoPrompt: true });
     try {
-      const session = await getFreshSession();
-      if (!session) { updateScene(sceneId, { enhancingVideoPrompt: false }); return; }
-
       const userContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
       if (raw) userContent.push({ type: 'text', text: raw });
 
@@ -837,24 +769,17 @@ ${styleHint}`;
         ? 'Ты профессиональный промпт-инженер для генерации рекламных видео. Внимательно рассмотри приложенное изображение. Опиши что на нём изображено и напиши промпт для генерации видео на основе этого кадра: добавь детали о движении камеры, динамике, освещении, стиле и атмосфере. Если пользователь дал текстовый контекст сцены — учти его. Верни ТОЛЬКО готовый промпт для видеогенерации, без кавычек и пояснений. Пиши на английском языке. Максимум 200 слов.'
         : 'Ты профессиональный промпт-инженер для генерации рекламных видео. Улучши промпт пользователя, добавив детали о движении камеры, динамике, освещении, стиле и атмосфере для создания эффектного рекламного ролика. Верни ТОЛЬКО улучшенный промпт, без кавычек и пояснений. Пиши на том же языке, что и исходный промпт. Максимум 200 слов.';
 
-      const res = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/chat`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: scene?.imageUrl ? 'gpt-4o' : 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: systemText },
-            { role: 'user', content: userContent },
-          ],
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const enhanced = data.choices?.[0]?.message?.content?.trim();
-        const isRefusal = enhanced && /(извинит|к сожалению|я не могу|не могу помочь|i can'?t|i'?m sorry|sorry,? i|i'?m unable|i cannot|i'?m not able|can'?t assist|can'?t help)/i.test(enhanced);
-        if (enhanced && !isRefusal) {
-          updateScene(sceneId, { videoPrompt: enhanced });
-        }
+      const data = await chatCompletion({
+        model: scene?.imageUrl ? 'gpt-4o' : 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemText },
+          { role: 'user', content: userContent },
+        ],
+      }) as any;
+      const enhanced = data.choices?.[0]?.message?.content?.trim();
+      const isRefusal = enhanced && /(извинит|к сожалению|я не могу|не могу помочь|i can'?t|i'?m sorry|sorry,? i|i'?m unable|i cannot|i'?m not able|can'?t assist|can'?t help)/i.test(enhanced);
+      if (enhanced && !isRefusal) {
+        updateScene(sceneId, { videoPrompt: enhanced });
       }
     } catch { /* ignore */ }
     updateScene(sceneId, { enhancingVideoPrompt: false });

@@ -31,7 +31,6 @@
     "@capacitor/keyboard": "^8.0.5",
     "@capacitor/splash-screen": "^8.0.2",
     "@capacitor/status-bar": "^8.0.3",
-    "@supabase/supabase-js": "^2.57.4",
     "bcryptjs": "^3.0.2",
     "fabric": "^6.5.4",
     "fastify": "^5.4.0",

@@ -24,7 +24,7 @@ import {
   User,
   Clock,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { searchNicknames, sendSharedMedia, getReceivedMedia, markMediaSeen, deleteSharedMedia, getUnseenMediaCount } from '@/lib/api';
 
 export type MediaType = 'image' | 'video' | 'audio';
 
@@ -161,11 +161,11 @@ function SendDialog({
     if (q.length < 2) { setResults([]); return; }
     setSearching(true);
     setError(null);
-    const { data, error: err } = await supabase.rpc('search_users_by_nickname', { p_query: q });
-    if (err) {
+    try {
+      const data = await searchNicknames(q);
+      setResults((data || []).map((u: { user_id: string; nickname: string }) => ({ id: u.user_id, nickname: u.nickname })));
+    } catch {
       setError('Ошибка поиска');
-    } else {
-      setResults((data || []).map((u: { id: string; nickname: string }) => ({ id: u.id, nickname: u.nickname })));
     }
     setSearching(false);
   }, []);
@@ -183,20 +183,20 @@ function SendDialog({
     }
     setSending(receiverId);
     setError(null);
-    const { error: insertErr } = await supabase.from('shared_media').insert({
-      receiver_id: receiverId,
-      media_type: item.type,
-      media_url: item.url,
-      label: item.label,
-    });
-    if (insertErr) {
-      setError('Не удалось отправить');
-      setSending(null);
-    } else {
+    try {
+      await sendSharedMedia({
+        receiver_nickname: receiverNickname,
+        media_type: item.type,
+        media_url: item.url,
+        label: item.label,
+      });
       setSent(receiverNickname);
       setSending(null);
       saveContact({ id: receiverId, nickname: receiverNickname });
       setTimeout(() => { onSent(); onClose(); }, 1200);
+    } catch {
+      setError('Не удалось отправить');
+      setSending(null);
     }
   };
 
@@ -365,14 +365,10 @@ export default function LibraryPanel({ open, onClose, items, onDelete, onPreview
     if (!open) return;
     let cancelled = false;
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user || cancelled) return;
-      const { count } = await supabase
-        .from('shared_media')
-        .select('id', { count: 'exact', head: true })
-        .eq('receiver_id', user.id)
-        .eq('seen', false);
-      if (!cancelled) setUnreadCount(count ?? 0);
+      try {
+        const data = await getUnseenMediaCount();
+        if (!cancelled) setUnreadCount(data.count ?? 0);
+      } catch {}
     })();
     return () => { cancelled = true; };
   }, [open]);
@@ -386,38 +382,29 @@ export default function LibraryPanel({ open, onClose, items, onDelete, onPreview
 
   const loadReceived = useCallback(async () => {
     setReceivedLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setReceivedLoading(false); return; }
+    try {
+      const data = await getReceivedMedia();
+      if (data && data.length > 0) {
+        setReceived(data.map((d: any) => ({
+          id: d.id,
+          url: d.media_url,
+          label: d.label || '',
+          type: d.media_type as MediaType,
+          timestamp: new Date(d.created_at),
+          senderNickname: d.sender_nickname || 'unknown',
+          seen: d.seen,
+        })));
 
-    const { data } = await supabase
-      .from('shared_media')
-      .select('id, media_type, media_url, label, seen, created_at, sender_id')
-      .eq('receiver_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(50);
-
-    if (data && data.length > 0) {
-      const senderIds = [...new Set(data.map(d => d.sender_id))];
-      const { data: senders } = await supabase.rpc('get_nicknames_by_ids', { p_ids: senderIds });
-      const senderMap = new Map((senders || []).map((s: { id: string; nickname: string }) => [s.id, s.nickname || 'unknown']));
-
-      setReceived(data.map(d => ({
-        id: d.id,
-        url: d.media_url,
-        label: d.label,
-        type: d.media_type as MediaType,
-        timestamp: new Date(d.created_at),
-        senderNickname: senderMap.get(d.sender_id) || 'unknown',
-        seen: d.seen,
-      })));
-
-      const unseenIds = data.filter(d => !d.seen).map(d => d.id);
-      if (unseenIds.length > 0) {
-        await supabase.from('shared_media').update({ seen: true }).in('id', unseenIds);
-        setUnreadCount(0);
-        onSeenAll?.();
+        const unseenIds = data.filter((d: any) => !d.seen).map((d: any) => d.id);
+        if (unseenIds.length > 0) {
+          await Promise.all(unseenIds.map((id: string) => markMediaSeen(id)));
+          setUnreadCount(0);
+          onSeenAll?.();
+        }
+      } else {
+        setReceived([]);
       }
-    } else {
+    } catch {
       setReceived([]);
     }
     setReceivedLoading(false);
@@ -427,29 +414,17 @@ export default function LibraryPanel({ open, onClose, items, onDelete, onPreview
     if (open && showReceived) loadReceived();
   }, [open, showReceived, loadReceived]);
 
+  // Poll for new received media instead of realtime
   useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    const setupRealtime = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user || cancelled) return;
-      const ch = supabase
-        .channel(`lib-received-${user.id}-${Date.now()}`)
-        .on(
-          'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'shared_media', filter: `receiver_id=eq.${user.id}` },
-          () => { if (!cancelled) loadReceived(); }
-        )
-        .subscribe();
-      return ch;
-    };
-    let channel: Awaited<ReturnType<typeof setupRealtime>>;
-    setupRealtime().then(ch => { channel = ch; });
-    return () => { cancelled = true; if (channel) supabase.removeChannel(channel); };
-  }, [open, loadReceived]);
+    if (!open || !showReceived) return;
+    const interval = setInterval(() => loadReceived(), 5000);
+    return () => clearInterval(interval);
+  }, [open, showReceived, loadReceived]);
 
   const handleDeleteReceived = async (id: string) => {
-    await supabase.from('shared_media').delete().eq('id', id);
+    try {
+      await deleteSharedMedia(id);
+    } catch {}
     setReceived(prev => prev.filter(r => r.id !== id));
   };
 

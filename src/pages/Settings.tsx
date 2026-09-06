@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Coins, X, Gift, Copy, Check, Users, Share2, UserPlus, TrendingUp, User, Mail, Lock, Sun, Moon, Monitor, EyeOff, Eye, ArrowLeft, LogOut, AtSign, ChevronRight, Shield, Palette, Database, Sparkles, Heart, PartyPopper } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { getBalance, updatePassword, updateProfile } from '@/lib/api';
+import { getBalance, getFullBalance, updatePassword, updateProfile, createPayment } from '@/lib/api';
 import { useTheme } from '@/lib/theme';
 
 const TOKEN_PACKAGES = [
@@ -16,7 +15,7 @@ const TOKEN_PACKAGES = [
 type Theme = 'light' | 'dark' | 'system';
 
 export default function Settings() {
-  const { user, signOut, getFreshSession } = useAuth();
+  const { user, signOut } = useAuth();
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
   const [tokens, setTokens] = useState<number | null>(null);
@@ -52,7 +51,6 @@ export default function Settings() {
   useEffect(() => {
     if (!user) return;
     loadBalance();
-    loadReferralData();
   }, [user]);
 
   useEffect(() => {
@@ -65,24 +63,12 @@ export default function Settings() {
   const loadBalance = async () => {
     if (!user) return;
     try {
-      const data = await getBalance();
+      const data = await getFullBalance();
       setTokens(data.tokens);
+      if (data.referral_code) setReferralCode(data.referral_code);
+      setTotalEarnings(data.total_referral_earnings ?? 0);
+      if (data.nickname) setNickname(data.nickname);
     } catch {}
-  };
-
-  const loadReferralData = async () => {
-    const { data, count } = await supabase
-      .from('referrals')
-      .select('earned, created_at, referred_id', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .limit(5);
-    if (data) {
-      setReferrals(data.map(r => ({
-        earned: Number(r.earned),
-        created_at: r.created_at,
-      })));
-    }
-    if (count !== null) setReferralCount(count);
   };
 
   const handleSaveName = async () => {
@@ -128,17 +114,7 @@ export default function Settings() {
   const handleChangeEmail = async () => {
     setEmailSaving(true);
     setEmailMessage(null);
-    if (!newEmail.trim() || newEmail.trim() === user?.email) {
-      setEmailMessage({ type: 'error', text: 'Введите новый e-mail' });
-      setEmailSaving(false);
-      return;
-    }
-    const { error } = await supabase.auth.updateUser({ email: newEmail.trim() });
-    if (error) {
-      setEmailMessage({ type: 'error', text: error.message });
-    } else {
-      setEmailMessage({ type: 'success', text: 'Письмо подтверждения отправлено на новый адрес' });
-    }
+    setEmailMessage({ type: 'error', text: 'Смена email временно недоступна' });
     setEmailSaving(false);
     setTimeout(() => setEmailMessage(null), 5000);
   };
@@ -178,28 +154,7 @@ export default function Settings() {
     }
 
     try {
-      const freshSession = await getFreshSession();
-      if (!freshSession) {
-        setPaymentError('Вы не авторизованы');
-        setPaymentLoading(false);
-        return;
-      }
-
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const response = await fetch(`${supabaseUrl}/functions/v1/create-payment`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${freshSession.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ tokens: tokensToBy }),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || result.error) {
-        throw new Error(result.error || `Ошибка (${response.status})`);
-      }
+      const result = await createPayment(tokensToBy);
 
       if (result.payment_url) {
         window.location.href = result.payment_url;

@@ -3,7 +3,7 @@ import { Loader2, Gift, ChevronDown, Video, Image, Mic, MessageCircle, Mail, Loc
 import { FloatingIcons, MouseSpotlight, useMouseGlow } from '@/components/AnimatedBackground';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
+import { registerReferral } from '@/lib/api';
 
 
 
@@ -12,10 +12,7 @@ function useUserStats() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/user-stats`;
-      const res = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
-      });
+      const res = await fetch('/api/user-stats');
       if (!res.ok) return;
       const data = await res.json();
       if (typeof data.total_users === 'number' && typeof data.online_users === 'number') {
@@ -392,15 +389,20 @@ export default function AuthPage() {
     setError(null);
     setSuccess(null);
     setLoading(true);
-    const siteUrl = import.meta.env.VITE_SITE_URL || window.location.origin;
-    const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: siteUrl,
-    });
-    if (resetErr) {
-      console.error('Password reset error:', resetErr);
-      setError('Не удалось отправить ссылку. Попробуйте позже.');
-    } else {
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'Не удалось отправить ссылку.');
+      }
       setSuccess('Ссылка для сброса пароля отправлена на вашу почту. Проверьте входящие и папку «Спам».');
+    } catch (err) {
+      console.error('Password reset error:', err);
+      setError(err instanceof Error ? err.message : 'Не удалось отправить ссылку. Попробуйте позже.');
     }
     setLoading(false);
   };
@@ -427,18 +429,7 @@ export default function AuthPage() {
         setSuccess('verify_email');
         if (refCode) {
           try {
-            const { data: { session } } = await supabase.auth.getSession();
-            if (session) {
-              const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-              await fetch(`${supabaseUrl}/functions/v1/register-referral`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${session.access_token}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ referral_code: refCode }),
-              });
-            }
+            await registerReferral(refCode);
           } catch {
             // Silently ignore referral errors
           }

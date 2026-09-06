@@ -62,8 +62,7 @@ import {
   Brush,
   Blend,
 } from 'lucide-react';
-import { supabase, getFreshSession } from '@/lib/supabase';
-import { getBalance } from '@/lib/api';
+import { getStoredSession, authenticatedFetch, chatCompletion, generateImage as apiGenerateImage, submitVideo, pollVideo as apiPollVideo, textToSpeech, speechToText, uploadFile, uploadVideoInput, getBalance as fetchBalance } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import ModelSelector, { MODELS, getModelDisplayName, getModelInfo, getProviderColor, ProviderIcon } from '@/components/ModelSelector';
 import TTSModelSelector, { getTTSModelDisplayName, getTTSModelInfo, voiceLabel } from '@/components/TTSModelSelector';
@@ -241,11 +240,9 @@ async function uploadDataUrlToStorage(dataUrl: string, userId: string, bucket = 
   }
 
   const ext = mime.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
-  const path = `${userId}/${crypto.randomUUID()}.${ext}`;
-  const { error } = await supabase.storage.from(bucket).upload(path, blob, { contentType: mime, upsert: false });
-  if (error) throw new Error(`Не удалось загрузить изображение: ${error.message || 'неизвестная ошибка'}`);
-  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
-  return data.publicUrl;
+  const filename = `${userId}_${crypto.randomUUID()}.${ext}`;
+  const { url } = await uploadFile(bucket, blob, filename);
+  return url;
 }
 
 function parseDates(sessions: ChatSession[]): ChatSession[] {
@@ -748,7 +745,7 @@ export default function Generator() {
 
     const loadBalance = async () => {
       try {
-        const data = await getBalance();
+        const data = await fetchBalance();
         setBalance(data.tokens);
       } catch {}
     };
@@ -761,19 +758,17 @@ export default function Generator() {
   useEffect(() => {
     if (!user) return;
     const loadUnread = async () => {
-      const { data } = await supabase
-        .from('support_tickets')
-        .select('unread_user')
-        .eq('status', 'open');
-      const total = (data || []).reduce((s, t) => s + (t.unread_user || 0), 0);
-      setSupportUnread(total);
+      try {
+        const res = await authenticatedFetch('/api/support/unread');
+        if (res.ok) {
+          const body = await res.json();
+          setSupportUnread(body.total ?? 0);
+        }
+      } catch {}
     };
     loadUnread();
-    const ch = supabase
-      .channel('support-unread-user')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'support_tickets', filter: `user_id=eq.${user.id}` }, () => loadUnread())
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
+    const interval = setInterval(loadUnread, 15_000);
+    return () => clearInterval(interval);
   }, [user]);
 
   // Realtime unseen shared media subscription + notification sound
@@ -782,66 +777,18 @@ export default function Generator() {
     let mounted = true;
 
     const loadCount = async () => {
-      const { data } = await supabase
-        .from('shared_media')
-        .select('media_type')
-        .eq('receiver_id', user.id)
-        .eq('seen', false);
-      if (mounted && data) {
-        setUnseenMediaCount(data.length);
-        const byType = { image: 0, video: 0, audio: 0 };
-        for (const row of data) {
-          const t = row.media_type as keyof typeof byType;
-          if (t in byType) byType[t]++;
-        }
-        setUnseenMediaByType(byType);
-      }
-    };
-    loadCount();
-
-    const playNotificationSound = () => {
       try {
-        const ctx = new AudioContext();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.type = 'sine';
-        gain.gain.setValueAtTime(0.3, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
-        osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.1);
-        osc.frequency.setValueAtTime(1320, ctx.currentTime + 0.2);
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.5);
+        const res = await authenticatedFetch('/api/shared-media/unseen-count');
+        if (res.ok && mounted) {
+          const body = await res.json();
+          setUnseenMediaCount(body.count ?? 0);
+          if (body.by_type) setUnseenMediaByType(body.by_type);
+        }
       } catch {}
     };
-
-    const channelName = `shared-media-${user.id}-${Date.now()}`;
-    const channel = supabase
-      .channel(channelName)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'shared_media', filter: `receiver_id=eq.${user.id}` },
-        (payload) => {
-          if (!mounted) return;
-          setUnseenMediaCount(prev => prev + 1);
-          const mediaType = (payload.new as { media_type?: string })?.media_type;
-          if (mediaType === 'image' || mediaType === 'video' || mediaType === 'audio') {
-            setUnseenMediaByType(prev => ({ ...prev, [mediaType]: prev[mediaType] + 1 }));
-          }
-          playNotificationSound();
-        }
-      )
-      .subscribe((status) => {
-        if (status === 'CHANNEL_ERROR' && mounted) {
-          setTimeout(() => {
-            supabase.removeChannel(channel);
-          }, 2000);
-        }
-      });
-
-    return () => { mounted = false; supabase.removeChannel(channel); };
+    loadCount();
+    const interval = setInterval(loadCount, 10_000);
+    return () => { mounted = false; clearInterval(interval); };
   }, [user]);
 
   // Load each tab's history independently for faster perceived loading
@@ -1002,15 +949,6 @@ export default function Generator() {
     }
 
     try {
-      const session = await getFreshSession();
-      if (!session) {
-        setTtsError('Необходима авторизация');
-        return;
-      }
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
-
       const ttsModelInfo = getTTSModelInfo(selectedTTSModel);
       const bodyPayload: Record<string, unknown> = {
         text,
@@ -1027,45 +965,12 @@ export default function Generator() {
         }
       }
 
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL ?? ''}/api/ai/tts`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(bodyPayload),
-          signal: controller.signal,
-        }
-      );
-
-      clearTimeout(timeoutId);
-
-      const ct = res.headers.get('Content-Type') || '';
-
-      if (!res.ok) {
-        if (ct.includes('application/json')) {
-          const err = await res.json();
-          setTtsError(err.error || `Ошибка ${res.status}`);
-        } else {
-          const errText = await res.text();
-          setTtsError(errText || `Ошибка ${res.status}`);
-        }
-        return;
-      }
-
-      if (ct.includes('application/json')) {
-        const errBody = await res.json();
-        setTtsError(errBody.error || 'Сервер вернул неожиданный ответ');
-        return;
-      }
-
-      const blob = await res.blob();
+      const { audioBlob: blob, costRubles, balanceRemaining } = await textToSpeech(bodyPayload);
       if (blob.size === 0) {
         setTtsError('Сервер вернул пустой ответ');
         return;
       }
+      if (typeof balanceRemaining === 'number') setBalance(balanceRemaining);
 
       const localUrl = URL.createObjectURL(blob);
       const entryId = crypto.randomUUID();
@@ -1224,29 +1129,7 @@ export default function Generator() {
     setSttError(null);
     setSttResult(null);
     try {
-      const session = await getFreshSession();
-      if (!session) { setSttError('Необходима авторизация'); return; }
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL ?? ''}/api/ai/stt`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ audio_data: sttAudioBase64, model: sttModel }),
-        }
-      );
-
-      const balanceHeader = res.headers.get('X-Balance-Remaining');
-      if (balanceHeader) setBalance(parseFloat(balanceHeader));
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: `Ошибка ${res.status}` }));
-        throw new Error(err.error || `Ошибка ${res.status}`);
-      }
-
-      const data = await res.json();
+      const data = await speechToText({ audio_data: sttAudioBase64, model: sttModel });
       setSttResult(data.text);
       const entryId = crypto.randomUUID();
       setSttHistory(prev => [{ id: entryId, text: data.text, model: sttModel, duration: data.duration || 0, timestamp: new Date() }, ...prev]);
@@ -1293,52 +1176,27 @@ export default function Generator() {
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise((r) => setTimeout(r, 5000));
       try {
-        const session = await getFreshSession();
+        const session = getStoredSession();
         if (!session) {
           failTask(taskId, 'Сессия истекла. Обновите страницу.');
           return;
         }
 
-        const baseUrl = `${import.meta.env.VITE_API_URL ?? ''}/api/ai/video`;
-        const pollUrl = `${baseUrl}?id=${encodeURIComponent(generationId)}`;
-        const pollRes = await fetch(pollUrl, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-        });
-
-        if (!pollRes.ok) {
-          const errBody = await pollRes.json().catch(() => null);
-          const errMsg = errBody?.error || `Ошибка сервера (${pollRes.status})`;
-          consecutiveErrors++;
-          if (consecutiveErrors >= 3) {
-            failTask(taskId, errMsg);
-            if (pendingRowId) {
-              await supabase.from('pending_generations').update({ status: 'failed', error_message: errMsg, updated_at: new Date().toISOString() }).eq('id', pendingRowId);
-            }
-            return;
-          }
-          continue;
-        }
-
+        const pollData = await apiPollVideo(generationId);
         consecutiveErrors = 0;
-        const pollData = await pollRes.json();
 
         if (pollData.status === 'completed' && pollData.url) {
           if (pendingRowId) {
-            await supabase.from('pending_generations').update({ status: 'completed', result_url: pollData.url, updated_at: new Date().toISOString() }).eq('id', pendingRowId);
+            await authenticatedFetch(`/api/pending-generations/${pendingRowId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'completed', result_url: pollData.url }) }).catch(() => {});
           }
           removeTask(taskId);
-          // Avoid duplicate: use functional state check
           const entryId = crypto.randomUUID();
           setVideoHistory(prev => {
             if (prev.some(e => e.url === pollData.url)) return prev;
-            return [...prev, { id: entryId, url: pollData.url, prompt, model, duration, timestamp: new Date() }];
+            return [...prev, { id: entryId, url: pollData.url!, prompt, model, duration, timestamp: new Date() }];
           });
           setTimeout(() => videoHistoryEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-          saveVideoEntry({ prompt, model, duration, video_url: pollData.url }).then((dbEntry) => {
+          saveVideoEntry({ prompt, model, duration, video_url: pollData.url! }).then((dbEntry) => {
             if (dbEntry) setVideoHistory(prev => prev.map(e => e.id === entryId ? { ...e, id: dbEntry.id } : e));
           });
           return;
@@ -1346,17 +1204,17 @@ export default function Generator() {
 
         if (pollData.status === 'failed') {
           if (pendingRowId) {
-            await supabase.from('pending_generations').update({ status: 'failed', error_message: pollData.error || 'Ошибка', updated_at: new Date().toISOString() }).eq('id', pendingRowId);
+            await authenticatedFetch(`/api/pending-generations/${pendingRowId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'failed', error_message: pollData.error || 'Ошибка' }) }).catch(() => {});
           }
           failTask(taskId, pollData.error || 'Генерация завершилась с ошибкой');
           return;
         }
-      } catch {
+      } catch (err) {
         consecutiveErrors++;
         if (consecutiveErrors >= 5) {
           failTask(taskId, 'Потеряна связь с сервером');
           if (pendingRowId) {
-            await supabase.from('pending_generations').update({ status: 'failed', error_message: 'Потеряна связь', updated_at: new Date().toISOString() }).eq('id', pendingRowId);
+            await authenticatedFetch(`/api/pending-generations/${pendingRowId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'failed', error_message: 'Потеряна связь' }) }).catch(() => {});
           }
           return;
         }
@@ -1364,7 +1222,7 @@ export default function Generator() {
     }
 
     if (pendingRowId) {
-      await supabase.from('pending_generations').update({ status: 'failed', error_message: 'Тайм-аут', updated_at: new Date().toISOString() }).eq('id', pendingRowId);
+      await authenticatedFetch(`/api/pending-generations/${pendingRowId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'failed', error_message: 'Тайм-аут' }) }).catch(() => {});
     }
     failTask(taskId, 'Превышено время ожидания (10 мин)');
   }, []);
@@ -1376,12 +1234,8 @@ export default function Generator() {
     (async () => {
       // 1) Restore completed rows that have a result_url but might be missing from video_history
       const recentCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      const { data: completedRows } = await supabase
-        .from('pending_generations')
-        .select('*')
-        .eq('status', 'completed')
-        .not('result_url', 'is', null)
-        .gt('created_at', recentCutoff);
+      const completedRes = await authenticatedFetch(`/api/pending-generations?status=completed&since=${encodeURIComponent(recentCutoff)}`).catch(() => null);
+      const completedRows = completedRes?.ok ? await completedRes.json().catch(() => null) : null;
 
       if (completedRows && completedRows.length > 0) {
         const currentUrls = new Set(videoHistory.map(e => e.url));
@@ -1411,65 +1265,45 @@ export default function Generator() {
       // 2) Fetch only PENDING rows (not failed — those stay failed)
       // Fetch PENDING rows + stale RESUMING rows (crashed before finishing recovery)
       const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-      const { data: pendingRows } = await supabase
-        .from('pending_generations')
-        .select('*')
-        .eq('status', 'pending')
-        .gt('created_at', recentCutoff)
-        .order('created_at', { ascending: true });
-      const { data: staleResumingRows } = await supabase
-        .from('pending_generations')
-        .select('*')
-        .eq('status', 'resuming')
-        .lt('updated_at', staleCutoff)
-        .gt('created_at', recentCutoff)
-        .order('created_at', { ascending: true });
+      const pendingRes = await authenticatedFetch(`/api/pending-generations?status=pending&since=${encodeURIComponent(recentCutoff)}`).catch(() => null);
+      const pendingRows = pendingRes?.ok ? await pendingRes.json().catch(() => null) : null;
+      const staleRes = await authenticatedFetch(`/api/pending-generations?status=resuming&stale_before=${encodeURIComponent(staleCutoff)}&since=${encodeURIComponent(recentCutoff)}`).catch(() => null);
+      const staleResumingRows = staleRes?.ok ? await staleRes.json().catch(() => null) : null;
       const pending = [...(pendingRows || []), ...(staleResumingRows || [])];
 
       if (pending.length === 0) return;
 
       // Mark them as 'resuming' immediately so another tab/refresh won't double-pick
       const pendingIds = pending.map(t => t.id);
-      await supabase
-        .from('pending_generations')
-        .update({ status: 'resuming', updated_at: new Date().toISOString() })
-        .in('id', pendingIds);
+      await authenticatedFetch('/api/pending-generations/bulk-update', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: pendingIds, status: 'resuming' }),
+      }).catch(() => {});
 
-      const session = await getFreshSession();
+      const session = getStoredSession();
       if (!session) {
-        // Can't check — put them back to pending for next visit
-        await supabase.from('pending_generations').update({ status: 'pending' }).in('id', pendingIds);
+        await authenticatedFetch('/api/pending-generations/bulk-update', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: pendingIds, status: 'pending' }) }).catch(() => {});
         return;
       }
 
       // 3) One-shot status check for each row (silently, no UI cards yet)
-      const baseUrl = `${import.meta.env.VITE_API_URL ?? ''}/api/ai/video`;
       const stillProcessing: typeof pending = [];
 
       for (const task of pending) {
         try {
-          const pollUrl = `${baseUrl}?id=${encodeURIComponent(task.generation_id)}&estimated_cost=${task.estimated_cost || 0}`;
-          const res = await fetch(pollUrl, {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-          });
-          if (!res.ok) {
-            stillProcessing.push(task);
-            continue;
-          }
-          const data = await res.json();
+          const data = await apiPollVideo(task.generation_id);
 
           if (data.status === 'completed' && data.url) {
-            await supabase.from('pending_generations').update({ status: 'completed', result_url: data.url, updated_at: new Date().toISOString() }).eq('id', task.id);
+            await authenticatedFetch(`/api/pending-generations/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'completed', result_url: data.url }) }).catch(() => {});
             setVideoHistory(prev => {
               if (prev.some(e => e.url === data.url)) return prev;
-              return [...prev, { id: task.id, url: data.url, prompt: task.prompt, model: task.model, duration: task.duration || 5, timestamp: new Date(task.created_at) }];
+              return [...prev, { id: task.id, url: data.url!, prompt: task.prompt, model: task.model, duration: task.duration || 5, timestamp: new Date(task.created_at) }];
             });
-            saveVideoEntry({ prompt: task.prompt, model: task.model, duration: task.duration || 5, video_url: data.url });
+            saveVideoEntry({ prompt: task.prompt, model: task.model, duration: task.duration || 5, video_url: data.url! });
           } else if (data.status === 'failed') {
-            await supabase.from('pending_generations').update({ status: 'failed', error_message: data.error || 'Ошибка', updated_at: new Date().toISOString() }).eq('id', task.id);
+            await authenticatedFetch(`/api/pending-generations/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'failed', error_message: data.error || 'Ошибка' }) }).catch(() => {});
           } else {
-            // Still generating — need full polling
             stillProcessing.push(task);
           }
         } catch {
@@ -1481,10 +1315,11 @@ export default function Generator() {
       if (stillProcessing.length === 0) return;
 
       // Put them back to 'pending' for the poll loop to manage
-      await supabase
-        .from('pending_generations')
-        .update({ status: 'pending', updated_at: new Date().toISOString() })
-        .in('id', stillProcessing.map(t => t.id));
+      await authenticatedFetch('/api/pending-generations/bulk-update', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: stillProcessing.map(t => t.id), status: 'pending' }),
+      }).catch(() => {});
 
       setActiveTab('video');
       setActiveVideoTasks(prev => [...prev, ...stillProcessing.map(task => ({
@@ -1524,44 +1359,24 @@ export default function Generator() {
     setTimeout(() => imageHistoryEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
 
     try {
-      const session = await getFreshSession();
-      if (!session) {
-        setActiveImageTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: 'Необходима авторизация' } : t));
-        return;
+      const info = getImageModelInfo(taskModel);
+      const payload: Record<string, unknown> = { model: taskModel, prompt };
+      const maxN = info?.maxN || 1;
+      const safeN = Math.min(Math.max(1, imageCount), maxN);
+      if (safeN > 1) payload.n = safeN;
+      if (info) {
+        if (info.aspectRatios.length > 0) payload.aspect_ratio = imageAspectRatio;
+        if (info.usesSize) payload.size = imageSize;
+        else if (info.resolutions.length > 0) payload.resolution = imageResolution;
+        if (info.qualities.length > 0) payload.quality = imageQuality;
+      }
+      if (imageAttachedRefs.length > 0) {
+        payload.input_references = imageAttachedRefs.map(url => ({ type: 'image_url', image_url: { url } }));
       }
 
-      const response = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/image`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        signal: AbortSignal.timeout(300_000),
-        body: JSON.stringify((() => {
-          const info = getImageModelInfo(taskModel);
-          const payload: Record<string, unknown> = { model: taskModel, prompt };
-          const maxN = info?.maxN || 1;
-          const safeN = Math.min(Math.max(1, imageCount), maxN);
-          if (safeN > 1) payload.n = safeN;
-          if (info) {
-            if (info.aspectRatios.length > 0) payload.aspect_ratio = imageAspectRatio;
-            if (info.usesSize) payload.size = imageSize;
-            else if (info.resolutions.length > 0) payload.resolution = imageResolution;
-            if (info.qualities.length > 0) payload.quality = imageQuality;
-          }
-          if (imageAttachedRefs.length > 0) {
-            payload.input_references = imageAttachedRefs.map(url => ({ type: 'image_url', image_url: { url } }));
-          }
-          return payload;
-        })()),
-      });
-
-      const result = await response.json();
-      if (!response.ok || result.error) {
-        const errMsg = response.status === 504
-          ? 'Генерация заняла слишком много времени. Попробуйте снизить разрешение или выбрать другую модель.'
-          : (result.error || `Ошибка (${response.status})`);
-        setActiveImageTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: errMsg } : t));
+      const result = await apiGenerateImage(payload) as { error?: string; data?: Array<Record<string, unknown>> };
+      if (result.error) {
+        setActiveImageTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: result.error! } : t));
         return;
       }
       if (!result.data || result.data.length === 0) {
@@ -1573,18 +1388,16 @@ export default function Generator() {
         let url = (imageData.storage_url as string) || '';
         if (!url && imageData.b64_json) {
           try {
-            const { data: { session: freshSess } } = await supabase.auth.getSession();
-            if (freshSess) {
+            const session = getStoredSession();
+            if (session) {
               const binaryStr = atob(imageData.b64_json as string);
               const bytes = new Uint8Array(binaryStr.length);
               for (let j = 0; j < binaryStr.length; j++) bytes[j] = binaryStr.charCodeAt(j);
-              const ext = ((imageData.media_type as string) || 'image/png').includes('webp') ? 'webp' : 'png';
-              const fileName = `${freshSess.user.id}/${crypto.randomUUID()}.${ext}`;
-              const { error: upErr } = await supabase.storage.from('generated-images').upload(fileName, bytes.buffer, { contentType: (imageData.media_type as string) || 'image/png' });
-              if (!upErr) {
-                const { data: urlData } = supabase.storage.from('generated-images').getPublicUrl(fileName);
-                url = urlData.publicUrl;
-              }
+              const mime = (imageData.media_type as string) || 'image/png';
+              const ext = mime.includes('webp') ? 'webp' : 'png';
+              const blob = new Blob([bytes.buffer], { type: mime });
+              const { url: uploadedUrl } = await uploadFile('generated-images', blob, `${crypto.randomUUID()}.${ext}`);
+              url = uploadedUrl;
             }
           } catch {}
         }
@@ -1617,9 +1430,6 @@ export default function Generator() {
     if ((!raw && !hasImages) || isEnhancingImagePrompt) return;
     setIsEnhancingImagePrompt(true);
     try {
-      const session = await getFreshSession();
-      if (!session) { setIsEnhancingImagePrompt(false); return; }
-
       const userContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
       if (raw) userContent.push({ type: 'text', text: raw });
       if (hasImages) {
@@ -1652,23 +1462,13 @@ export default function Generator() {
         msgContent = userContent;
       }
 
-      const res = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/chat`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: useVision ? 'gpt-4.1' : 'gpt-4.1-mini',
-          messages: [
-            { role: 'system', content: systemText },
-            { role: 'user', content: msgContent },
-          ],
-        }),
-      });
-      if (!res.ok) {
-        let errMsg = 'Не удалось улучшить промпт';
-        try { const errBody = await res.json(); errMsg = errBody?.error || errMsg; } catch {}
-        setIsEnhancingImagePrompt(false); setImageError(errMsg); return;
-      }
-      const data = await res.json();
+      const data = await chatCompletion({
+        model: useVision ? 'gpt-4.1' : 'gpt-4.1-mini',
+        messages: [
+          { role: 'system', content: systemText },
+          { role: 'user', content: msgContent },
+        ],
+      }) as { choices?: Array<{ message?: { content?: string } }> };
       const enhanced = data.choices?.[0]?.message?.content?.trim();
       const isRefusal = enhanced && /(извинит|к сожалению|я не могу|не могу помочь|i can'?t|i'?m sorry|sorry,? i|i'?m unable|i cannot|i'?m not able|can'?t assist|can'?t help)/i.test(enhanced);
       if (enhanced && !isRefusal) {
@@ -1717,17 +1517,11 @@ export default function Generator() {
     setTimeout(() => videoHistoryEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
 
     try {
-      const session = await getFreshSession();
+      const session = getStoredSession();
       if (!session) {
         setActiveVideoTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: 'Необходима авторизация' } : t));
         return;
       }
-
-      const baseUrl = `${import.meta.env.VITE_API_URL ?? ''}/api/ai/video`;
-      const headers = {
-        Authorization: `Bearer ${session.access_token}`,
-        'Content-Type': 'application/json',
-      };
 
       const uid = session.user.id;
       const needsJpeg = true;
@@ -1749,35 +1543,22 @@ export default function Generator() {
       const allVideoRefUrls = extraRefUrls.slice(taskAllRefs.length, taskAllRefs.length + taskVideoRefs.length).filter(Boolean) as string[];
       const allAudioRefUrls = extraRefUrls.slice(taskAllRefs.length + taskVideoRefs.length).filter(Boolean) as string[];
 
-      const submitRes = await fetch(baseUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          prompt,
-          model: taskModel,
-          duration: taskDuration,
-          aspect_ratio: taskAspect,
-          resolution: taskResolution,
-          ...(getVideoPixelSize(taskModel, taskAspect, taskResolution) ? { size: getVideoPixelSize(taskModel, taskAspect, taskResolution) } : {}),
-          ...(firstUrl ? { first_frame_url: firstUrl } : {}),
-          ...(lastUrl ? { last_frame_url: lastUrl } : {}),
-          ...(refUrl ? { reference_url: refUrl } : {}),
-          ...(allImageRefUrls.length > 0 ? { reference_urls: allImageRefUrls } : {}),
-          ...(allVideoRefUrls.length > 0 ? { video_reference_urls: allVideoRefUrls } : {}),
-          ...(audioUrl ? { audio_url: audioUrl } : {}),
-          ...(allAudioRefUrls.length > 0 ? { audio_reference_urls: allAudioRefUrls } : {}),
-          ...(taskNegativePrompt ? { negative_prompt: taskNegativePrompt } : {}),
-        }),
+      const submitData = await submitVideo({
+        prompt,
+        model: taskModel,
+        duration: taskDuration,
+        aspect_ratio: taskAspect,
+        resolution: taskResolution,
+        ...(getVideoPixelSize(taskModel, taskAspect, taskResolution) ? { size: getVideoPixelSize(taskModel, taskAspect, taskResolution) } : {}),
+        ...(firstUrl ? { first_frame_url: firstUrl } : {}),
+        ...(lastUrl ? { last_frame_url: lastUrl } : {}),
+        ...(refUrl ? { reference_url: refUrl } : {}),
+        ...(allImageRefUrls.length > 0 ? { reference_urls: allImageRefUrls } : {}),
+        ...(allVideoRefUrls.length > 0 ? { video_reference_urls: allVideoRefUrls } : {}),
+        ...(audioUrl ? { audio_url: audioUrl } : {}),
+        ...(allAudioRefUrls.length > 0 ? { audio_reference_urls: allAudioRefUrls } : {}),
+        ...(taskNegativePrompt ? { negative_prompt: taskNegativePrompt } : {}),
       });
-
-      const submitData = await submitRes.json();
-
-      if (!submitRes.ok || submitData.error) {
-        const errMsg = submitData.error || `Ошибка ${submitRes.status}`;
-        setVideoError(errMsg);
-        setActiveVideoTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: errMsg } : t));
-        return;
-      }
 
       if (submitData.status === 'completed' && submitData.url) {
         setActiveVideoTasks(prev => prev.filter(t => t.id !== taskId));
@@ -1799,15 +1580,20 @@ export default function Generator() {
 
       const estimatedCost = submitData.estimated_cost ?? 0;
 
-      const { data: pendingRow } = await supabase.from('pending_generations').insert({
-        generation_id: generationId,
-        prompt,
-        model: taskModel,
-        duration: taskDuration,
-        aspect_ratio: taskAspect,
-        estimated_cost: estimatedCost,
-        type: 'video',
-      }).select('id').maybeSingle();
+      const pendingRes = await authenticatedFetch('/api/pending-generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          generation_id: generationId,
+          prompt,
+          model: taskModel,
+          duration: taskDuration,
+          aspect_ratio: taskAspect,
+          estimated_cost: estimatedCost,
+          type: 'video',
+        }),
+      }).catch(() => null);
+      const pendingRow = pendingRes?.ok ? await pendingRes.json().catch(() => null) : null;
 
       setActiveVideoTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'polling' } : t));
 
@@ -1826,9 +1612,6 @@ export default function Generator() {
     if ((!raw && !hasAttachments) || isEnhancingVideoPrompt) return;
     setIsEnhancingVideoPrompt(true);
     try {
-      const session = await getFreshSession();
-      if (!session) { setIsEnhancingVideoPrompt(false); return; }
-
       const userContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
       if (raw) userContent.push({ type: 'text', text: raw });
       {
@@ -1855,23 +1638,13 @@ export default function Generator() {
         ? `Ты профессиональный промпт-инженер для генерации видео. Пользователь прикрепил ${imageLabels.length} изображени${imageLabels.length === 1 ? 'е' : 'я'} (${imageLabels.join(', ')}). Внимательно проанализируй каждое: опиши сцену, объекты, стиль, атмосферу. Учти роль каждого изображения — первый кадр определяет начало видео, последний кадр — финал, референс — общий стиль и настроение. Добавь детали о движении камеры, переходах, освещении и динамике. ${raw ? 'Пользователь также указал текстовый запрос — учти его как направление, но основывайся на реальном содержимом фото.' : 'Текстового запроса нет — сгенерируй промпт полностью на основе изображений.'} Не выдумывай деталей, которых нет на изображениях. Верни ТОЛЬКО готовый промпт для генерации видео, без объяснений. Пиши на русском языке. Максимум 400 слов.`
         : 'Ты профессиональный промпт-инженер для генерации видео. Улучши текстовый промпт пользователя, добавив детали о движении камеры, освещении, стиле, атмосфере и динамике. Не выдумывай деталей, которых нет в запросе, и не меняй тему. Верни ТОЛЬКО улучшенный промпт, без объяснений. Пиши на том же языке, что и исходный промпт. Максимум 400 слов.';
 
-      const res = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/chat`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: hasImages ? 'gpt-4.1' : 'gpt-4.1-mini',
-          messages: [
-            { role: 'system', content: systemText },
-            { role: 'user', content: hasImages ? userContent : raw },
-          ],
-        }),
-      });
-      if (!res.ok) {
-        let errMsg = 'Не удалось улучшить промпт';
-        try { const errBody = await res.json(); errMsg = errBody?.error || errMsg; } catch {}
-        setIsEnhancingVideoPrompt(false); setVideoError(errMsg); return;
-      }
-      const data = await res.json();
+      const data = await chatCompletion({
+        model: hasImages ? 'gpt-4.1' : 'gpt-4.1-mini',
+        messages: [
+          { role: 'system', content: systemText },
+          { role: 'user', content: hasImages ? userContent : raw },
+        ],
+      }) as { choices?: Array<{ message?: { content?: string } }> };
       const enhanced = data.choices?.[0]?.message?.content?.trim();
       const isRefusal = enhanced && /(извинит|к сожалению|я не могу|не могу помочь|i can'?t|i'?m sorry|sorry,? i|i'?m unable|i cannot|i'?m not able|can'?t assist|can'?t help)/i.test(enhanced);
       if (enhanced && !isRefusal) {
@@ -1997,27 +1770,10 @@ export default function Generator() {
       ...chatHistory,
       currentMsg,
     ];
-    const freshSession = await getFreshSession();
-    if (!freshSession) { setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'error', content: 'Необходимо войти в аккаунт', timestamp: new Date() }]); setIsLoading(false); return; }
-    const token = freshSession.access_token;
+    const storedSession = getStoredSession();
+    if (!storedSession) { setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'error', content: 'Необходимо войти в аккаунт', timestamp: new Date() }]); setIsLoading(false); return; }
 
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const response = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/chat`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ messages: apiMessages, model: selectedModel, temperature, max_tokens: maxTokens, top_p: topP, frequency_penalty: frequencyPenalty, presence_penalty: presencePenalty }),
-      signal: controller.signal,
-    });
-
-    let result: any;
-    try { result = await response.json(); } catch { throw new Error(`Ошибка сервера (${response.status})`); }
-    if (!response.ok || result.error) {
-      throw new Error(result.error || `Ошибка (${response.status})`);
-    }
+    const result = await chatCompletion({ messages: apiMessages, model: selectedModel, temperature, max_tokens: maxTokens, top_p: topP, frequency_penalty: frequencyPenalty, presence_penalty: presencePenalty }) as any;
 
     const assistantContent = result.choices?.[0]?.message?.content || 'Нет ответа';
     const assistantMsg: ChatMessage = {
@@ -2030,9 +1786,8 @@ export default function Generator() {
   };
 
   const generateImage = async (userText: string, image: string | null) => {
-    const freshSession = await getFreshSession();
-    if (!freshSession) { setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'error', content: 'Необходимо войти в аккаунт', timestamp: new Date() }]); return; }
-    const token = freshSession.access_token;
+    const storedSession = getStoredSession();
+    if (!storedSession) { setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'error', content: 'Необходимо войти в аккаунт', timestamp: new Date() }]); return; }
 
     const payload: Record<string, unknown> = {
       model: imageModel,
@@ -2042,22 +1797,9 @@ export default function Generator() {
       payload.input_references = [{ type: 'image_url', image_url: { url: image } }];
     }
 
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const response = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/image`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    let result: any;
-    try { result = await response.json(); } catch { throw new Error(`Ошибка сервера (${response.status})`); }
-    if (!response.ok || result.error) {
-      throw new Error(result.error || `Ошибка (${response.status})`);
+    const result = await apiGenerateImage(payload) as any;
+    if (result.error) {
+      throw new Error(result.error);
     }
     if (!result.data || result.data.length === 0) {
       throw new Error('API не вернул изображений');
@@ -2068,19 +1810,14 @@ export default function Generator() {
 
     if (!imageUrl && imageData.b64_json) {
       try {
-        const { data: { session: freshSess } } = await supabase.auth.getSession();
-        if (freshSess) {
-          const binaryStr = atob(imageData.b64_json);
-          const bytes = new Uint8Array(binaryStr.length);
-          for (let j = 0; j < binaryStr.length; j++) bytes[j] = binaryStr.charCodeAt(j);
-          const ext = (imageData.media_type || 'image/png').includes('webp') ? 'webp' : 'png';
-          const fileName = `${freshSess.user.id}/${crypto.randomUUID()}.${ext}`;
-          const { error: upErr } = await supabase.storage.from('generated-images').upload(fileName, bytes.buffer, { contentType: imageData.media_type || 'image/png' });
-          if (!upErr) {
-            const { data: urlData } = supabase.storage.from('generated-images').getPublicUrl(fileName);
-            imageUrl = urlData.publicUrl;
-          }
-        }
+        const binaryStr = atob(imageData.b64_json);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let j = 0; j < binaryStr.length; j++) bytes[j] = binaryStr.charCodeAt(j);
+        const mime = imageData.media_type || 'image/png';
+        const ext = mime.includes('webp') ? 'webp' : 'png';
+        const blob = new Blob([bytes.buffer], { type: mime });
+        const { url: uploadedUrl } = await uploadFile('generated-images', blob, `${crypto.randomUUID()}.${ext}`);
+        imageUrl = uploadedUrl;
       } catch {}
     }
 
@@ -3246,18 +2983,7 @@ export default function Generator() {
                                   if (!entry.text.trim()) return;
                                   setTtsRegeneratingId(entry.id);
                                   try {
-                                    const session = await getFreshSession();
-                                    if (!session) { setTtsError('Необходима авторизация'); return; }
-                                    const res = await fetch(
-                                      `${import.meta.env.VITE_API_URL ?? ''}/api/ai/tts`,
-                                      {
-                                        method: 'POST',
-                                        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ text: entry.text.trim(), model: entry.model, voice: entry.voice }),
-                                      }
-                                    );
-                                    if (!res.ok) { const err = await res.json().catch(() => null); setTtsError(err?.error || `Ошибка ${res.status}`); return; }
-                                    const blob = await res.blob();
+                                    const { audioBlob: blob } = await textToSpeech({ text: entry.text.trim(), model: entry.model, voice: entry.voice });
                                     if (blob.size === 0) { setTtsError('Сервер вернул пустой ответ'); return; }
                                     const localUrl = URL.createObjectURL(blob);
                                     setTtsHistory(prev => prev.map(h => h.id === entry.id ? { ...h, url: localUrl, timestamp: new Date() } : h));
@@ -4883,7 +4609,7 @@ export default function Generator() {
         onSeenAll={() => {
           setUnseenMediaCount(0);
           setUnseenMediaByType({ image: 0, video: 0, audio: 0 });
-          if (user) supabase.from('shared_media').update({ seen: true }).eq('receiver_id', user.id).eq('seen', false).then();
+          if (user) authenticatedFetch('/api/shared-media/mark-all-seen', { method: 'PUT' }).catch(() => {});
         }}
       />
 

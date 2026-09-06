@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Lock, Eye, EyeOff, Loader2, CheckCircle2, ShieldCheck } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { updatePassword } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 
 export default function ResetPassword() {
@@ -29,11 +29,11 @@ export default function ResetPassword() {
     }
 
     setLoading(true);
-    const { error: updateErr } = await supabase.auth.updateUser({ password });
-    if (updateErr) {
-      setError(updateErr.message);
-    } else {
+    try {
+      await updatePassword(password);
       setDone(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось обновить пароль');
     }
     setLoading(false);
   };
