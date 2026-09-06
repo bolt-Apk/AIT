@@ -1,0 +1,30 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_SITE_URL: ${VITE_SITE_URL:-https://avirond.com}
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_SECRET=${JWT_SECRET}
+      - POSTGRESQL_HOST=${POSTGRESQL_HOST}
+      - POSTGRESQL_PORT=${POSTGRESQL_PORT:-5432}
+      - POSTGRESQL_USER=${POSTGRESQL_USER}
+      - POSTGRESQL_PASSWORD=${POSTGRESQL_PASSWORD}
+      - POSTGRESQL_DBNAME=${POSTGRESQL_DBNAME:-default_db}
+      - POSTGRESQL_SSL=${POSTGRESQL_SSL:-true}
+      - PGSSLROOTCERT=/app/certs/root.crt
+      - STORAGE_DIR=/app/storage
+      - CORS_ORIGIN=${CORS_ORIGIN:-https://avirond.com}
+      - AITUNNEL_API_KEY=${AITUNNEL_API_KEY}
+      - YOOKASSA_SHOP_ID=${YOOKASSA_SHOP_ID}
+      - YOOKASSA_SECRET_KEY=${YOOKASSA_SECRET_KEY}
+    volumes:
+      - storage_data:/app/storage
+    restart: unless-stopped
+
+volumes:
+  storage_data:
