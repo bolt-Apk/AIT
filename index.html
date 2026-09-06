@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/webp" href="/favicon.webp" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="AI-taip" />
+    <meta name="theme-color" content="#030712" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
+    <title>AI-taip — ИИ платформа: изображения, видео, аудио и чат</title>
+    <meta name="description" content="Создавайте изображения, видео, озвучку и общайтесь с ИИ на одной платформе. Быстро, удобно и на русском языке." />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="AI-taip" />
+    <meta property="og:title" content="AI-taip — ИИ платформа: изображения, видео, аудио и чат" />
+    <meta property="og:description" content="Создавайте изображения, видео, озвучку и общайтесь с ИИ на одной платформе. Быстро, удобно и на русском языке." />
+    <meta property="og:image" content="https://ai-taip.com/og-image.webp" />
+    <meta property="og:image:type" content="image/webp" />
+    <meta property="og:image:width" content="1024" />
+    <meta property="og:image:height" content="1024" />
+    <meta property="og:url" content="https://ai-taip.com" />
+    <meta property="og:locale" content="ru_RU" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="AI-taip — ИИ генерация изображений, видео и аудио" />
+    <meta name="twitter:description" content="Создавайте контент с помощью искусственного интеллекта на одной платформе." />
+    <meta name="twitter:image" content="https://ai-taip.com/og-image.webp" />
+  </head>
+  <body>
+    <script>
+      (function(){
+        var t=localStorage.getItem('app-theme')||'dark';
+        if(t==='system'){t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}
+        document.documentElement.className=t;
+      })();
+    </script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
