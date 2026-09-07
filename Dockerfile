@@ -14,7 +14,6 @@ RUN npm install --no-audit --no-fund --maxsockets=2 --omit=dev && \
 
 COPY . .
 RUN npm run build
-RUN npm run server:build
 
 # Keep only production deps for the final image
 RUN rm -rf node_modules/.cache && \
