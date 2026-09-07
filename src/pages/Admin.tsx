@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
-import { adminAction, adminGet, getAppSettings } from '@/lib/api';
+import { supabase } from '@/lib/supabase';
 import {
   Shield,
   Users,
@@ -160,47 +160,57 @@ export default function AdminPanel() {
   const [freeMode, setFreeMode] = useState(false);
   const [freeModeLoading, setFreeModeLoading] = useState(false);
 
+  const apiBase = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-data`;
 
+  const getHeaders = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    return {
+      Authorization: `Bearer ${session?.access_token || ''}`,
+      'Content-Type': 'application/json',
+    };
+  }, []);
 
   useEffect(() => { checkAdmin(); }, [user]);
 
   useEffect(() => {
-    getAppSettings().then((data) => {
+    supabase.from('app_settings').select('free_mode').eq('id', 1).maybeSingle().then(({ data }) => {
       if (data) setFreeMode(data.free_mode === true);
-    }).catch(() => {});
+    });
   }, []);
 
   const toggleFreeMode = async () => {
     setFreeModeLoading(true);
-    try {
-      const newVal = !freeMode;
-      await adminAction('set_free_mode', { free_mode: newVal });
-      setFreeMode(newVal);
-    } catch {}
+    const newVal = !freeMode;
+    const { error } = await supabase.from('app_settings').update({ free_mode: newVal }).eq('id', 1);
+    if (!error) setFreeMode(newVal);
     setFreeModeLoading(false);
   };
 
   const runHealthCheck = useCallback(async (cat?: string) => {
     setHealthLoading(true);
     try {
+      const headers = await getHeaders();
       const checkCat = cat || healthCategory;
-      const data = await adminAction('model_health_check', { category: checkCat }) as unknown as HealthCheckResult;
-      setHealthResult(data);
-      const newFailed = data.results.filter(r => r.status !== 'ok');
-      const newFailedIds = new Set(newFailed.map(r => r.id));
-      const brandNew = newFailed.filter(r => !prevFailedRef.current.has(r.id));
-      if (brandNew.length > 0) {
-        if (soundEnabled) {
-          try { const audio = new Audio(ALERT_SOUND_URL); audio.volume = 0.6; audio.play().catch(() => {}); } catch {}
+      const res = await fetch(`${apiBase.replace('admin-data', 'model-health-check')}?category=${checkCat}`, { headers });
+      if (res.ok) {
+        const data: HealthCheckResult = await res.json();
+        setHealthResult(data);
+        const newFailed = data.results.filter(r => r.status !== 'ok');
+        const newFailedIds = new Set(newFailed.map(r => r.id));
+        const brandNew = newFailed.filter(r => !prevFailedRef.current.has(r.id));
+        if (brandNew.length > 0) {
+          if (soundEnabled) {
+            try { const audio = new Audio(ALERT_SOUND_URL); audio.volume = 0.6; audio.play().catch(() => {}); } catch {}
+          }
+          if (pushEnabled && 'Notification' in window && Notification.permission === 'granted') {
+            new Notification('Avirond: модели недоступны', {
+              body: `${brandNew.length} модел${brandNew.length === 1 ? 'ь' : brandNew.length < 5 ? 'и' : 'ей'}: ${brandNew.slice(0, 3).map(m => m.id).join(', ')}${brandNew.length > 3 ? '...' : ''}`,
+              icon: '/favicon.webp', tag: 'model-alert', requireInteraction: true,
+            });
+          }
         }
-        if (pushEnabled && 'Notification' in window && Notification.permission === 'granted') {
-          new Notification('AI-taip: модели недоступны', {
-            body: `${brandNew.length} модел${brandNew.length === 1 ? 'ь' : brandNew.length < 5 ? 'и' : 'ей'}: ${brandNew.slice(0, 3).map(m => m.id).join(', ')}${brandNew.length > 3 ? '...' : ''}`,
-            icon: '/favicon.webp', tag: 'model-alert', requireInteraction: true,
-          });
-        }
+        prevFailedRef.current = newFailedIds;
       }
-      prevFailedRef.current = newFailedIds;
     } catch {}
     setHealthLoading(false);
   }, [healthCategory, soundEnabled, pushEnabled]);
@@ -213,21 +223,17 @@ export default function AdminPanel() {
 
   const checkAdmin = async () => {
     if (!user) return;
-    try {
-      const data = await adminGet('check_admin');
-      setIsAdmin(!!data);
-      if (data) { loadStats(); } else { setLoading(false); }
-    } catch {
-      setIsAdmin(false);
-      setLoading(false);
-    }
+    const { data } = await supabase.from('admin_users').select('id').eq('id', user.id).maybeSingle();
+    setIsAdmin(!!data);
+    if (data) { loadStats(); } else { setLoading(false); }
   };
 
   const loadStats = async () => {
     setLoading(true);
     try {
-      const data = await adminGet('stats');
-      setStats(data as unknown as Stats);
+      const headers = await getHeaders();
+      const res = await fetch(`${apiBase}?action=stats`, { headers });
+      if (res.ok) setStats(await res.json());
     } catch {}
     setLoading(false);
   };
@@ -235,8 +241,9 @@ export default function AdminPanel() {
   const loadUsers = async () => {
     setUsersLoading(true);
     try {
-      const data = await adminGet('users');
-      setUsers(data as unknown as AdminUser[]);
+      const headers = await getHeaders();
+      const res = await fetch(`${apiBase}?action=users`, { headers });
+      if (res.ok) setUsers(await res.json());
     } catch {}
     setUsersLoading(false);
   };
@@ -250,9 +257,9 @@ export default function AdminPanel() {
     if (isNaN(amount) || amount < 0) return;
     setActionLoading(true);
     try {
-      await adminAction('update_balance', { userId, amount });
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, tokens: amount } : u));
-      setEditingUser(null);
+      const headers = await getHeaders();
+      const res = await fetch(`${apiBase}?action=update_balance`, { method: 'POST', headers, body: JSON.stringify({ userId, amount }) });
+      if (res.ok) { setUsers(prev => prev.map(u => u.id === userId ? { ...u, tokens: amount } : u)); setEditingUser(null); }
     } catch {}
     setActionLoading(false);
   };
@@ -261,9 +268,9 @@ export default function AdminPanel() {
     if (!confirm(`Удалить пользователя ${email}? Это действие необратимо.`)) return;
     setActionLoading(true);
     try {
-      await adminAction('delete_user', { userId });
-      setUsers(prev => prev.filter(u => u.id !== userId));
-      loadStats();
+      const headers = await getHeaders();
+      const res = await fetch(`${apiBase}?action=delete_user`, { method: 'POST', headers, body: JSON.stringify({ userId }) });
+      if (res.ok) { setUsers(prev => prev.filter(u => u.id !== userId)); loadStats(); }
     } catch {}
     setActionLoading(false);
   };
@@ -272,13 +279,19 @@ export default function AdminPanel() {
     if (!banModal) return;
     setActionLoading(true);
     try {
-      await adminAction('ban_user', { userId: banModal.userId, reason: banReason || 'Нарушение правил' });
-      setUsers(prev => prev.map(u => u.id === banModal.userId
-        ? { ...u, banned_at: new Date().toISOString(), ban_reason: banReason || 'Нарушение правил' }
-        : u
-      ));
-      setBanModal(null);
-      setBanReason('');
+      const headers = await getHeaders();
+      const res = await fetch(`${apiBase}?action=ban_user`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ userId: banModal.userId, reason: banReason || 'Нарушение правил' }),
+      });
+      if (res.ok) {
+        setUsers(prev => prev.map(u => u.id === banModal.userId
+          ? { ...u, banned_at: new Date().toISOString(), ban_reason: banReason || 'Нарушение правил' }
+          : u
+        ));
+        setBanModal(null);
+        setBanReason('');
+      }
     } catch {}
     setActionLoading(false);
   };
@@ -286,8 +299,9 @@ export default function AdminPanel() {
   const handleUnbanUser = async (userId: string) => {
     setActionLoading(true);
     try {
-      await adminAction('unban_user', { userId });
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, banned_at: null, ban_reason: null } : u));
+      const headers = await getHeaders();
+      const res = await fetch(`${apiBase}?action=unban_user`, { method: 'POST', headers, body: JSON.stringify({ userId }) });
+      if (res.ok) setUsers(prev => prev.map(u => u.id === userId ? { ...u, banned_at: null, ban_reason: null } : u));
     } catch {}
     setActionLoading(false);
   };
@@ -298,8 +312,9 @@ export default function AdminPanel() {
     setGenData(null);
     setGenTab('images');
     try {
-      const data = await adminGet(`user_generations&userId=${userId}`);
-      setGenData(data as unknown as UserGenerations);
+      const headers = await getHeaders();
+      const res = await fetch(`${apiBase}?action=user_generations&userId=${userId}`, { headers });
+      if (res.ok) setGenData(await res.json());
     } catch {}
     setGenLoading(false);
   };
@@ -361,7 +376,7 @@ export default function AdminPanel() {
             </div>
             <div>
               <h1 className="text-lg font-bold text-white leading-tight">Админ-панель</h1>
-              <p className="text-xs text-gray-500">AI-taip.COM</p>
+              <p className="text-xs text-gray-500">AVIROND.COM</p>
             </div>
           </div>
           <div className="flex items-center gap-2">

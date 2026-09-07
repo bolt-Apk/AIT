@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { adminAction, uploadSupportAttachment } from '@/lib/api';
+import { supabase, getFreshSession } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import {
   Send,
@@ -74,17 +74,30 @@ export default function AdminSupportChat() {
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
   }, []);
 
+  const getAuthHeaders = useCallback(async () => {
+    const session = await getFreshSession();
+    return {
+      Authorization: `Bearer ${session?.access_token}`,
+      'Content-Type': 'application/json',
+    };
+  }, []);
 
-
-  // Load tickets via admin API
+  // Load tickets via admin-data edge function
   const loadTickets = useCallback(async () => {
     try {
-      const data = await adminAction('get_support_tickets');
-      setTickets((data as any).tickets || []);
-    } catch {} finally {
+      const headers = await getAuthHeaders();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-data`,
+        { method: 'POST', headers, body: JSON.stringify({ action: 'get_support_tickets' }) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setTickets(data.tickets || []);
+      }
+    } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
@@ -92,55 +105,92 @@ export default function AdminSupportChat() {
   useEffect(() => {
     if (!selectedTicket) return;
     (async () => {
-      try {
-        const data = await adminAction('get_support_messages', { ticket_id: selectedTicket.id });
-        setMessages((data as any).messages || []);
+      const headers = await getAuthHeaders();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-data`,
+        { method: 'POST', headers, body: JSON.stringify({ action: 'get_support_messages', ticket_id: selectedTicket.id }) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setMessages(data.messages || []);
         scrollToBottom();
-      } catch {}
+      }
       // Mark as read
       if (selectedTicket.unread_admin > 0) {
-        try {
-          await adminAction('mark_ticket_read', { ticket_id: selectedTicket.id });
-        } catch {}
+        const h = await getAuthHeaders();
+        await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-data`,
+          { method: 'POST', headers: h, body: JSON.stringify({ action: 'mark_ticket_read', ticket_id: selectedTicket.id }) }
+        );
         setTickets(prev => prev.map(t => t.id === selectedTicket.id ? { ...t, unread_admin: 0 } : t));
       }
     })();
-  }, [selectedTicket, scrollToBottom]);
+  }, [selectedTicket, getAuthHeaders, scrollToBottom]);
 
-  // Poll for new messages instead of realtime
+  // Realtime for new messages + typing indicator
   useEffect(() => {
-    if (!selectedTicket) return;
-    const interval = setInterval(async () => {
-      try {
-        const data = await adminAction('get_support_messages', { ticket_id: selectedTicket.id });
-        const newMessages = (data as any).messages || [];
-        setMessages(prev => {
-          if (newMessages.length !== prev.length) {
-            scrollToBottom();
-            return newMessages;
-          }
-          return prev;
-        });
-      } catch {}
-      loadTickets();
-    }, 4000);
-    return () => clearInterval(interval);
+    const channel = supabase
+      .channel('admin-support')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'support_messages',
+      }, (payload) => {
+        const newMsg = payload.new as Message;
+        if (selectedTicket && newMsg.ticket_id === selectedTicket.id) {
+          setMessages(prev => {
+            if (prev.some(m => m.id === newMsg.id)) return prev;
+            return [...prev, newMsg];
+          });
+          scrollToBottom();
+          if (newMsg.sender === 'user') setUserTyping(false);
+        }
+        loadTickets();
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [selectedTicket, scrollToBottom, loadTickets]);
 
-  // Typing indicator removed (no realtime)
-  const broadcastTyping = useCallback(() => {}, []);
+  // Listen for user typing via broadcast
+  useEffect(() => {
+    if (!selectedTicket) return;
+    const channel = supabase.channel(`typing-${selectedTicket.id}`)
+      .on('broadcast', { event: 'typing' }, (payload) => {
+        if (payload.payload?.sender === 'user') {
+          setUserTyping(true);
+          clearTimeout(typingTimeoutRef.current);
+          typingTimeoutRef.current = setTimeout(() => setUserTyping(false), 3000);
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); setUserTyping(false); };
+  }, [selectedTicket]);
+
+  const broadcastTyping = useCallback(() => {
+    if (!selectedTicket) return;
+    supabase.channel(`typing-${selectedTicket.id}`).send({ type: 'broadcast', event: 'typing', payload: { sender: 'admin' } });
+  }, [selectedTicket]);
 
   const sendAdminMessage = async (content: string | null, mediaUrl: string | null, mediaType: 'text' | 'image' | 'video' | 'audio') => {
     if (!selectedTicket) return;
     setSending(true);
     try {
-      await adminAction('send_support_message', {
-        ticket_id: selectedTicket.id,
-        content,
-        media_url: mediaUrl,
-        media_type: mediaType,
-      });
-    } catch {} finally {
+      const headers = await getAuthHeaders();
+      await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-data`,
+        {
+          method: 'POST', headers,
+          body: JSON.stringify({
+            action: 'send_support_message',
+            ticket_id: selectedTicket.id,
+            content,
+            media_url: mediaUrl,
+            media_type: mediaType,
+          }),
+        }
+      );
+    } finally {
       setSending(false);
     }
   };
@@ -154,13 +204,12 @@ export default function AdminSupportChat() {
   };
 
   const uploadFile = async (file: File): Promise<string | null> => {
-    try {
-      const ext = file.name.split('.').pop() || 'bin';
-      const { url } = await uploadSupportAttachment(file, `admin_${Date.now()}.${ext}`);
-      return url;
-    } catch {
-      return null;
-    }
+    const ext = file.name.split('.').pop() || 'bin';
+    const path = `admin/${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from('support-attachments').upload(path, file);
+    if (error) return null;
+    const { data } = await supabase.storage.from('support-attachments').createSignedUrl(path, 60 * 60);
+    return data?.signedUrl ?? null;
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -186,11 +235,20 @@ export default function AdminSupportChat() {
     if (isNaN(amount) || amount <= 0) return;
     setTopUpLoading(true);
     try {
-      const data = await adminAction('top_up_user_balance', {
-        user_id: selectedTicket.user_id,
-        amount,
-      }) as any;
-      if (data?.success) {
+      const headers = await getAuthHeaders();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-data`,
+        {
+          method: 'POST', headers,
+          body: JSON.stringify({
+            action: 'top_up_user_balance',
+            user_id: selectedTicket.user_id,
+            amount,
+          }),
+        }
+      );
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
         setTopUpAmount('');
         setShowTopUp(false);
         await sendAdminMessage(`Баланс пополнен на ${amount.toFixed(2)} ₽`, null, 'text');
@@ -208,13 +266,19 @@ export default function AdminSupportChat() {
     if (!confirm('Удалить этот диалог? Все сообщения будут удалены.')) return;
     setDeletingTicket(ticketId);
     try {
-      await adminAction('delete_support_ticket', { ticket_id: ticketId });
-      setTickets(prev => prev.filter(t => t.id !== ticketId));
-      if (selectedTicket?.id === ticketId) {
-        setSelectedTicket(null);
-        setMessages([]);
+      const headers = await getAuthHeaders();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-data`,
+        { method: 'POST', headers, body: JSON.stringify({ action: 'delete_support_ticket', ticket_id: ticketId }) }
+      );
+      if (res.ok) {
+        setTickets(prev => prev.filter(t => t.id !== ticketId));
+        if (selectedTicket?.id === ticketId) {
+          setSelectedTicket(null);
+          setMessages([]);
+        }
       }
-    } catch {} finally {
+    } finally {
       setDeletingTicket(null);
     }
   };
@@ -539,16 +603,41 @@ export function useSupportUnread() {
   const [unread, setUnread] = useState(0);
 
   useEffect(() => {
+    const channel = supabase
+      .channel('admin-support-unread')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'support_tickets',
+      }, () => {
+        loadUnread();
+      })
+      .subscribe();
+
     async function loadUnread() {
       try {
-        const data = await adminAction('get_support_unread') as any;
-        setUnread(data?.unread || 0);
+        const session = await getFreshSession();
+        if (!session) return;
+        const res = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-data`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ action: 'get_support_unread' }),
+          }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setUnread(data.unread || 0);
+        }
       } catch {}
     }
 
     loadUnread();
-    const interval = setInterval(loadUnread, 5000);
-    return () => clearInterval(interval);
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   return unread;

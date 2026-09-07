@@ -82,7 +82,7 @@ export default function EmailVerified({ onContinue }: { onContinue: () => void }
         </button>
 
         <p className="text-center text-[11px] text-slate-400 dark:text-gray-600">
-          Добро пожаловать в AI-taip
+          Добро пожаловать в AviRond
         </p>
       </div>
     </div>

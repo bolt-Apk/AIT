@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Coins, X, Gift, Copy, Check, Users, Share2, UserPlus, TrendingUp, User, Mail, Lock, Sun, Moon, Monitor, EyeOff, Eye, ArrowLeft, LogOut, AtSign, ChevronRight, Shield, Palette, Database, Sparkles, Heart, PartyPopper } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { getBalance, getFullBalance, updatePassword, updateProfile, createPayment } from '@/lib/api';
 import { useTheme } from '@/lib/theme';
 
 const TOKEN_PACKAGES = [
@@ -15,7 +15,7 @@ const TOKEN_PACKAGES = [
 type Theme = 'light' | 'dark' | 'system';
 
 export default function Settings() {
-  const { user, signOut } = useAuth();
+  const { user, signOut, getFreshSession } = useAuth();
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
   const [tokens, setTokens] = useState<number | null>(null);
@@ -51,6 +51,7 @@ export default function Settings() {
   useEffect(() => {
     if (!user) return;
     loadBalance();
+    loadReferralData();
   }, [user]);
 
   useEffect(() => {
@@ -62,24 +63,45 @@ export default function Settings() {
 
   const loadBalance = async () => {
     if (!user) return;
-    try {
-      const data = await getFullBalance();
-      setTokens(data.tokens);
-      if (data.referral_code) setReferralCode(data.referral_code);
-      setTotalEarnings(data.total_referral_earnings ?? 0);
-      if (data.nickname) setNickname(data.nickname);
-    } catch {}
+    const { data } = await supabase
+      .from('user_balances')
+      .select('tokens, referral_code, total_referral_earnings, nickname')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (data) {
+      setTokens(Number(data.tokens));
+      setReferralCode(data.referral_code);
+      setTotalEarnings(data.total_referral_earnings || 0);
+      setNickname(data.nickname || '');
+    }
+  };
+
+  const loadReferralData = async () => {
+    const { data, count } = await supabase
+      .from('referrals')
+      .select('earned, created_at, referred_id', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .limit(5);
+    if (data) {
+      setReferrals(data.map(r => ({
+        earned: Number(r.earned),
+        created_at: r.created_at,
+      })));
+    }
+    if (count !== null) setReferralCount(count);
   };
 
   const handleSaveName = async () => {
     setProfileSaving(true);
     setProfileMessage(null);
-    try {
-      await updateProfile({ display_name: displayName.trim() });
-      setProfileMessage({ type: 'success', text: 'Имя обновлено' });
-    } catch (error) {
+    const { error } = await supabase.auth.updateUser({
+      data: { display_name: displayName.trim() },
+    });
+    if (error) {
       console.error('Failed to update display name:', error);
       setProfileMessage({ type: 'error', text: 'Не удалось обновить имя. Попробуйте позже.' });
+    } else {
+      setProfileMessage({ type: 'success', text: 'Имя обновлено' });
     }
     setProfileSaving(false);
     setTimeout(() => setProfileMessage(null), 3000);
@@ -99,13 +121,20 @@ export default function Settings() {
       setNicknameSaving(false);
       return;
     }
-    try {
-      await updateProfile({ nickname: trimmed });
+    const { error } = await supabase
+      .from('user_balances')
+      .update({ nickname: trimmed })
+      .eq('id', user!.id);
+    if (error) {
+      if (error.code === '23505') {
+        setNicknameMessage({ type: 'error', text: 'Этот никнейм уже занят' });
+      } else {
+        console.error('Failed to save nickname:', error);
+        setNicknameMessage({ type: 'error', text: 'Не удалось сохранить никнейм. Попробуйте позже.' });
+      }
+    } else {
       setNickname(trimmed);
       setNicknameMessage({ type: 'success', text: 'Никнейм сохранён' });
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('занят')) setNicknameMessage({ type: 'error', text: 'Этот никнейм уже занят' });
-      else { console.error('Failed to save nickname:', error); setNicknameMessage({ type: 'error', text: 'Не удалось сохранить никнейм. Попробуйте позже.' }); }
     }
     setNicknameSaving(false);
     setTimeout(() => setNicknameMessage(null), 3000);
@@ -114,7 +143,17 @@ export default function Settings() {
   const handleChangeEmail = async () => {
     setEmailSaving(true);
     setEmailMessage(null);
-    setEmailMessage({ type: 'error', text: 'Смена email временно недоступна' });
+    if (!newEmail.trim() || newEmail.trim() === user?.email) {
+      setEmailMessage({ type: 'error', text: 'Введите новый e-mail' });
+      setEmailSaving(false);
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ email: newEmail.trim() });
+    if (error) {
+      setEmailMessage({ type: 'error', text: error.message });
+    } else {
+      setEmailMessage({ type: 'success', text: 'Письмо подтверждения отправлено на новый адрес' });
+    }
     setEmailSaving(false);
     setTimeout(() => setEmailMessage(null), 5000);
   };
@@ -127,12 +166,12 @@ export default function Settings() {
       setPasswordSaving(false);
       return;
     }
-    try {
-      await updatePassword(newPassword);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setPasswordMessage({ type: 'error', text: error.message });
+    } else {
       setPasswordMessage({ type: 'success', text: 'Пароль успешно изменён' });
       setNewPassword('');
-    } catch (error) {
-      setPasswordMessage({ type: 'error', text: error instanceof Error ? error.message : 'Не удалось изменить пароль' });
     }
     setPasswordSaving(false);
     setTimeout(() => setPasswordMessage(null), 3000);
@@ -154,7 +193,28 @@ export default function Settings() {
     }
 
     try {
-      const result = await createPayment(tokensToBy);
+      const freshSession = await getFreshSession();
+      if (!freshSession) {
+        setPaymentError('Вы не авторизованы');
+        setPaymentLoading(false);
+        return;
+      }
+
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const response = await fetch(`${supabaseUrl}/functions/v1/create-payment`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${freshSession.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ tokens: tokensToBy }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        throw new Error(result.error || `Ошибка (${response.status})`);
+      }
 
       if (result.payment_url) {
         window.location.href = result.payment_url;
@@ -167,11 +227,11 @@ export default function Settings() {
   };
 
   const referralLink = referralCode
-    ? `https://ai-taip.com?ref=${referralCode}`
+    ? `https://avirond.com?ref=${referralCode}`
     : '';
 
   const referralShareText = referralLink
-    ? `Попробуй AI-taip — ИИ-платформу для генерации изображений, видео, озвучки и чата с нейросетью. Регистрируйся по моей ссылке и получи 1 000 ₽ на баланс бесплатно!\n\n${referralLink}`
+    ? `Попробуй AVIROND — ИИ-платформу для генерации изображений, видео, озвучки и чата с нейросетью. Регистрируйся по моей ссылке и получи 1 000 ₽ на баланс бесплатно!\n\n${referralLink}`
     : '';
 
   const handleCopyLink = () => {

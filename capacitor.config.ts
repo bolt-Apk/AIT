@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.AI-taip.app',
-  appName: 'AI-taip',
+  appId: 'com.avirond.app',
+  appName: 'AVIROND',
   webDir: 'dist',
   server: {
     androidScheme: 'https',
@@ -28,7 +28,7 @@ const config: CapacitorConfig = {
   ios: {
     contentInset: 'automatic',
     preferredContentMode: 'mobile',
-    scheme: 'AI-taip',
+    scheme: 'AVIROND',
   },
   android: {
     allowMixedContent: false,

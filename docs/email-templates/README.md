@@ -1,15 +1,15 @@
-# Брендированные шаблоны писем AI-taip
+# Брендированные шаблоны писем AviRond
 
 Шесть шаблонов для Supabase Authentication:
 
 | Файл | Тип письма | Вкладка в Supabase | Тема письма (Subject) |
 |------|-----------|-------------------|----------------------|
-| `confirm-signup.html` | Подтверждение регистрации | Confirm signup | Подтвердите email — AI-taip |
-| `invite-user.html` | Приглашение | Invite user | Приглашение в AI-taip |
-| `magic-link.html` | Вход по ссылке | Magic link | Вход в AI-taip |
-| `change-email.html` | Смена email | Change email address | Подтвердите новый email — AI-taip |
-| `reset-password.html` | Сброс пароля | Reset password | Сброс пароля — AI-taip |
-| `reauthentication.html` | Код подтверждения | Reauthentication | Код подтверждения — AI-taip |
+| `confirm-signup.html` | Подтверждение регистрации | Confirm signup | Подтвердите email — AviRond |
+| `invite-user.html` | Приглашение | Invite user | Приглашение в AviRond |
+| `magic-link.html` | Вход по ссылке | Magic link | Вход в AviRond |
+| `change-email.html` | Смена email | Change email address | Подтвердите новый email — AviRond |
+| `reset-password.html` | Сброс пароля | Reset password | Сброс пароля — AviRond |
+| `reauthentication.html` | Код подтверждения | Reauthentication | Код подтверждения — AviRond |
 
 ## Как установить
 

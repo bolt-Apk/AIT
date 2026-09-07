@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.webp', 'apple-touch-icon.png', 'og-image.webp'],
       manifest: {
-        name: 'AI-taip - ИИ Генератор',
-        short_name: 'AI-taip',
+        name: 'AVIROND - ИИ Генератор',
+        short_name: 'AVIROND',
         description: 'Платформа для генерации изображений, видео и аудио с помощью ИИ',
         theme_color: '#030712',
         background_color: '#030712',
@@ -82,6 +82,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-supabase': ['@supabase/supabase-js'],
         },
       },
     },

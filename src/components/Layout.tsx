@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useRef } from 'react';
 import AnimatedBackground from '@/components/AnimatedBackground';
+import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { sendPresence } from '@/lib/api';
 
 function detectDeviceType(): string {
   const ua = navigator.userAgent;
@@ -20,7 +20,12 @@ function usePresenceHeartbeat() {
 
     const sendHeartbeat = async () => {
       const deviceType = detectDeviceType();
-      await sendPresence({ device_type: deviceType, user_agent: navigator.userAgent });
+      await supabase.from('user_presence').upsert({
+        user_id: user.id,
+        last_seen: new Date().toISOString(),
+        device_type: deviceType,
+        user_agent: navigator.userAgent.slice(0, 255),
+      }, { onConflict: 'user_id' });
     };
 
     sendHeartbeat();

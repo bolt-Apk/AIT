@@ -3,7 +3,7 @@ import { Loader2, Gift, ChevronDown, Video, Image, Mic, MessageCircle, Mail, Loc
 import { FloatingIcons, MouseSpotlight, useMouseGlow } from '@/components/AnimatedBackground';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
-import { registerReferral } from '@/lib/api';
+import { supabase } from '@/lib/supabase';
 
 
 
@@ -12,7 +12,10 @@ function useUserStats() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch('/api/user-stats');
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/user-stats`;
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
+      });
       if (!res.ok) return;
       const data = await res.json();
       if (typeof data.total_users === 'number' && typeof data.online_users === 'number') {
@@ -389,20 +392,15 @@ export default function AuthPage() {
     setError(null);
     setSuccess(null);
     setLoading(true);
-    try {
-      const res = await fetch('/api/auth/reset-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Не удалось отправить ссылку.');
-      }
+    const siteUrl = import.meta.env.VITE_SITE_URL || window.location.origin;
+    const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: siteUrl,
+    });
+    if (resetErr) {
+      console.error('Password reset error:', resetErr);
+      setError('Не удалось отправить ссылку. Попробуйте позже.');
+    } else {
       setSuccess('Ссылка для сброса пароля отправлена на вашу почту. Проверьте входящие и папку «Спам».');
-    } catch (err) {
-      console.error('Password reset error:', err);
-      setError(err instanceof Error ? err.message : 'Не удалось отправить ссылку. Попробуйте позже.');
     }
     setLoading(false);
   };
@@ -429,7 +427,18 @@ export default function AuthPage() {
         setSuccess('verify_email');
         if (refCode) {
           try {
-            await registerReferral(refCode);
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session) {
+              const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+              await fetch(`${supabaseUrl}/functions/v1/register-referral`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${session.access_token}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ referral_code: refCode }),
+              });
+            }
           } catch {
             // Silently ignore referral errors
           }
@@ -494,7 +503,7 @@ export default function AuthPage() {
                       {isLogin ? 'Добро пожаловать' : 'Создайте аккаунт'}
                     </h2>
                     <p className="text-xs sm:text-sm text-slate-500 dark:text-gray-400">
-                      {isLogin ? 'Войдите для доступа к платформе' : 'Присоединяйтесь к AI-taip'}
+                      {isLogin ? 'Войдите для доступа к платформе' : 'Присоединяйтесь к AviRond'}
                     </p>
                   </div>
                   {/* Segmented tab switcher */}
@@ -584,9 +593,9 @@ export default function AuthPage() {
                           onFocus={() => setPassFocused(true)}
                           onBlur={() => setPassFocused(false)}
                           required
-                          minLength={8}
+                          minLength={6}
                           className="w-full bg-transparent text-sm text-slate-800 dark:text-gray-100 placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none"
-                          placeholder={isLogin ? 'Введите пароль' : 'Минимум 8 символов'}
+                          placeholder={isLogin ? 'Введите пароль' : 'Минимум 6 символов'}
                         />
                         <button
                           type="button"
@@ -628,7 +637,7 @@ export default function AuthPage() {
                             onFocus={() => setConfirmFocused(true)}
                             onBlur={() => setConfirmFocused(false)}
                             required
-                            minLength={8}
+                            minLength={6}
                             className="w-full bg-transparent text-sm text-slate-800 dark:text-gray-100 placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none"
                             placeholder="Повторите пароль"
                           />

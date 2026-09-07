@@ -11,7 +11,7 @@ import {
   LetterText, MoveHorizontal, Rows3,
   Replace, Eraser, RectangleHorizontal, Link2, Unlink2, Move,
 } from 'lucide-react';
-import { getStoredSession, authenticatedFetch } from '@/lib/api';
+import { getFreshSession } from '@/lib/supabase';
 import { IMAGE_MODELS, getImageModelInfo } from '@/components/ImageModelSelector';
 import { useCanvasEditor, type EditorLayer, type TextProps, type ShapeProps, type LayerDimensions } from '@/components/image-creator/useCanvasEditor';
 import {
@@ -280,6 +280,8 @@ export default function ImageCreator() {
     setAiGenerating(true);
     setAiError(null);
     try {
+      const session = await getFreshSession();
+      if (!session) { setAiError('Необходима авторизация'); return; }
       const prompt = aiPrompt.trim() || `Professional product/marketing image, clean, high quality, commercial style. Template: "${selectedTemplate?.name}"`;
       const info = getImageModelInfo(aiModel);
       const payload: Record<string, unknown> = { model: aiModel, prompt };
@@ -292,9 +294,9 @@ export default function ImageCreator() {
         }
       }
 
-      const response = await authenticatedFetch('/api/ai/image', {
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-image`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(300_000),
         body: JSON.stringify(payload),
       });
@@ -352,9 +354,11 @@ export default function ImageCreator() {
     try {
       const dataUrl = editor.getSelectedImageDataUrl();
       if (!dataUrl) { setRemoveBgError('Не удалось получить изображение'); return; }
-      const response = await authenticatedFetch('/api/ai/image', {
+      const session = await getFreshSession();
+      if (!session) { setRemoveBgError('Необходима авторизация'); return; }
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-image`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(120_000),
         body: JSON.stringify({
           model: 'gpt-image-1',

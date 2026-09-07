@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { supabase, getFreshSession } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { getStoredSession, uploadSupportAttachment, pollSupportMessages } from '@/lib/api';
 import {
   ArrowLeft,
   Send,
@@ -52,6 +52,8 @@ export default function SupportChat() {
   const [recordingTime, setRecordingTime] = useState(0);
   const [viewerImage, setViewerImage] = useState<string | null>(null);
   const signedMedia = useSignedSupportUrls(messages.map((m) => m.media_url));
+  const [adminTyping, setAdminTyping] = useState(false);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -67,9 +69,28 @@ export default function SupportChat() {
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const session = getStoredSession();
-      const response = await fetch('/api/support/ticket', { headers: { Authorization: `Bearer ${session?.access_token}` } });
-      if (response.ok) setTicket(await response.json());
+      const { data: existing } = await supabase
+        .from('support_tickets')
+        .select('*')
+        .eq('status', 'open')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existing) {
+        setTicket(existing);
+        // Mark as read
+        if (existing.unread_user > 0) {
+          await supabase.from('support_tickets').update({ unread_user: 0 }).eq('id', existing.id);
+        }
+      } else {
+        const { data: newTicket } = await supabase
+          .from('support_tickets')
+          .insert({ subject: 'Обращение в поддержку' })
+          .select()
+          .single();
+        if (newTicket) setTicket(newTicket);
+      }
       setLoading(false);
     })();
   }, [user]);
@@ -78,54 +99,80 @@ export default function SupportChat() {
   useEffect(() => {
     if (!ticket) return;
     (async () => {
-      const session = getStoredSession();
-      const response = await fetch(`/api/support/tickets/${ticket.id}/messages`, { headers: { Authorization: `Bearer ${session?.access_token}` } });
-      if (response.ok) {
-        setMessages(await response.json());
+      const { data } = await supabase
+        .from('support_messages')
+        .select('*')
+        .eq('ticket_id', ticket.id)
+        .order('created_at', { ascending: true });
+      if (data) {
+        setMessages(data);
         scrollToBottom();
       }
     })();
   }, [ticket, scrollToBottom]);
 
-  // Poll for new messages every 3 seconds
+  // Realtime subscription
   useEffect(() => {
     if (!ticket) return;
-    let lastMessageTime = messages.length > 0
-      ? messages[messages.length - 1].created_at
-      : new Date(0).toISOString();
-
-    const interval = setInterval(async () => {
-      try {
-        const data = await pollSupportMessages(ticket.id, lastMessageTime);
-        if (data.messages && data.messages.length > 0) {
-          const newMsgs = data.messages as Message[];
-          setMessages(prev => {
-            const existingIds = new Set(prev.map(m => m.id));
-            const unique = newMsgs.filter(m => !existingIds.has(m.id));
-            if (unique.length === 0) return prev;
-            return [...prev, ...unique];
-          });
-          lastMessageTime = newMsgs[newMsgs.length - 1].created_at;
-          scrollToBottom();
+    const channel = supabase
+      .channel(`support-${ticket.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'support_messages',
+        filter: `ticket_id=eq.${ticket.id}`,
+      }, (payload) => {
+        const newMsg = payload.new as Message;
+        setMessages(prev => {
+          if (prev.some(m => m.id === newMsg.id)) return prev;
+          return [...prev, newMsg];
+        });
+        scrollToBottom();
+        // Mark as read if admin sent
+        if (newMsg.sender === 'admin') {
+          supabase.from('support_tickets').update({ unread_user: 0 }).eq('id', ticket.id);
         }
-      } catch {
-        // ignore polling errors
-      }
-    }, 3000);
+      })
+      .subscribe();
 
-    return () => clearInterval(interval);
+    return () => { supabase.removeChannel(channel); };
   }, [ticket, scrollToBottom]);
+
+  // Typing indicator via broadcast
+  useEffect(() => {
+    if (!ticket) return;
+    const channel = supabase.channel(`typing-${ticket.id}`)
+      .on('broadcast', { event: 'typing' }, (payload) => {
+        if (payload.payload?.sender === 'admin') {
+          setAdminTyping(true);
+          clearTimeout(typingTimeoutRef.current);
+          typingTimeoutRef.current = setTimeout(() => setAdminTyping(false), 3000);
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); setAdminTyping(false); };
+  }, [ticket]);
+
+  const broadcastTyping = useCallback(() => {
+    if (!ticket) return;
+    supabase.channel(`typing-${ticket.id}`).send({ type: 'broadcast', event: 'typing', payload: { sender: 'user' } });
+  }, [ticket]);
 
   const sendMessage = async (content: string | null, mediaUrl: string | null, mediaType: 'text' | 'image' | 'video' | 'audio') => {
     if (!ticket) return;
     setSending(true);
     try {
-      const session = getStoredSession();
-      await fetch(`/api/support/tickets/${ticket.id}/messages`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, media_url: mediaUrl, media_type: mediaType }),
+      await supabase.from('support_messages').insert({
+        ticket_id: ticket.id,
+        sender: 'user',
+        content,
+        media_url: mediaUrl,
+        media_type: mediaType,
       });
+      await supabase.from('support_tickets').update({
+        last_message_at: new Date().toISOString(),
+      }).eq('id', ticket.id);
+      await supabase.rpc('increment_support_unread_admin', { p_ticket_id: ticket.id });
     } finally {
       setSending(false);
     }
@@ -140,12 +187,14 @@ export default function SupportChat() {
   };
 
   const uploadFile = async (file: File): Promise<string | null> => {
-    try {
-      const result = await uploadSupportAttachment(file, file.name);
-      return result.url;
-    } catch {
-      return null;
-    }
+    const session = await getFreshSession();
+    if (!session) return null;
+    const ext = file.name.split('.').pop() || 'bin';
+    const path = `${user!.id}/${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from('support-attachments').upload(path, file);
+    if (error) return null;
+    const { data } = await supabase.storage.from('support-attachments').createSignedUrl(path, 60 * 60);
+    return data?.signedUrl ?? null;
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -288,6 +337,16 @@ export default function SupportChat() {
               </div>
             );
           })}
+          {adminTyping && (
+            <div className="flex items-center gap-2 px-3 py-1.5">
+              <div className="flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-gray-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-gray-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-gray-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span className="text-xs text-slate-400 dark:text-gray-500">поддержка пишет...</span>
+            </div>
+          )}
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -334,6 +393,7 @@ export default function SupportChat() {
                 setInput(e.target.value);
                 e.target.style.height = 'auto';
                 e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                broadcastTyping();
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendText(); }
