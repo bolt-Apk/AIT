@@ -30,8 +30,8 @@ export async function deductTokens(pool: Pool, userId: string, amount: number): 
 
 export async function addTokens(pool: Pool, userId: string, amount: number): Promise<number> {
   const { rows } = await pool.query(
-    'UPDATE user_balances SET tokens = tokens + $1, updated_at = now() WHERE user_id = $2 RETURNING tokens',
+    'INSERT INTO user_balances (user_id, tokens) VALUES ($2, $1) ON CONFLICT (user_id) DO UPDATE SET tokens = user_balances.tokens + $1, updated_at = now() RETURNING tokens',
     [amount, userId],
   );
-  return Number(rows[0]?.tokens ?? 0);
+  return Number(rows[0].tokens);
 }

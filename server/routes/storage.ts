@@ -5,7 +5,7 @@ import { mkdirSync, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 
-const ALLOWED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp3', 'wav', 'ogg', 'webm', 'mp4', 'mov', 'avi', 'pdf', 'bin']);
+const ALLOWED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp3', 'wav', 'ogg', 'webm', 'mp4', 'mov', 'avi', 'pdf', 'bin']);
 
 function safeExt(filename: string | undefined, fallback: string): string {
   const raw = (filename || '').split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || '';

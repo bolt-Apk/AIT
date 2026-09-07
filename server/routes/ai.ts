@@ -476,8 +476,8 @@ export default function registerAiRoutes(app: FastifyInstance, pool: Pool, stora
       request.log.error(err, 'STT upstream fetch failed');
       return reply.code(502).send({ error: 'AI-сервис временно недоступен. Попробуйте позже.' });
     }
-    const result = await upstream.json().catch(() => ({})) as any;
     if (!upstream.ok) return reply.code(upstream.status).send({ error: 'Не удалось распознать речь' });
+    const result = await upstream.json().catch(() => ({})) as any;
 
     const actualDuration = result.duration || 0;
     const costRubles = pricePerSec * actualDuration;

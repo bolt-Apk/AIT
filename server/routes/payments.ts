@@ -55,7 +55,7 @@ export default function registerPaymentRoutes(app: FastifyInstance, pool: Pool) 
 
   // ---- YooKassa webhook ----
   app.post('/api/webhooks/yookassa', async (request, reply) => {
-    const rawBody = JSON.stringify(request.body);
+    const rawBody = (request as any).rawBodyBuf ? (request as any).rawBodyBuf.toString('utf8') : JSON.stringify(request.body);
     const isValid = await verifyWebhook(rawBody, request.headers as Record<string, string>);
     if (!isValid) return reply.code(403).send({ error: 'Forbidden' });
 

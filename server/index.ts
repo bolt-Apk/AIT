@@ -48,6 +48,18 @@ const app = Fastify({ logger: true });
 await app.register(cors, { origin: process.env.CORS_ORIGIN ?? true, credentials: true });
 await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
 
+app.addHook('preParsing', async (request, _reply, payload) => {
+  if (request.url === '/api/webhooks/yookassa') {
+    const chunks: Buffer[] = [];
+    for await (const chunk of payload) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const raw = Buffer.concat(chunks);
+    (request as any).rawBodyBuf = raw;
+    const { Readable } = await import('node:stream');
+    return Readable.from(raw);
+  }
+  return payload;
+});
+
 let storageDir = path.resolve(process.env.STORAGE_DIR ?? path.resolve(currentDir, '../storage'));
 try {
   mkdirSync(storageDir, { recursive: true });
