@@ -130,5 +130,8 @@ async function verifyWebhook(body: string, headers: Record<string, string | stri
   }
 
   const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));
+  const expectedBuf = Buffer.from(expected);
+  const sigBuf = Buffer.from(sig);
+  if (expectedBuf.length !== sigBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, sigBuf);
 }

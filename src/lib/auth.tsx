@@ -44,30 +44,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(nextSession);
     } catch (error) {
       console.error('signUp error:', error);
-      // Never reveal whether an address is already registered: a distinguishable
-      // response would let anyone enumerate which emails hold accounts.
-      const code: string = '';
       const msg = error instanceof Error ? error.message : '';
       if (
-        code === 'user_already_exists' ||
-        code === 'email_exists' ||
-        /already\s*(registered|exists)/i.test(msg)
+        /already\s*(registered|exists)/i.test(msg) ||
+        /не удалось создать/i.test(msg)
       ) {
         return 'Не удалось создать аккаунт с этими данными. Если аккаунт уже существует, войдите или восстановите пароль.';
       }
-      if (code === 'weak_password' || /password/i.test(msg)) {
+      if (/password/i.test(msg) || /пароль/i.test(msg)) {
         return 'Пароль слишком простой. Используйте не менее 8 символов, включая буквы и цифры.';
       }
-      if (code === 'over_request_rate_limit' || code === 'rate_limit' || /rate/i.test(msg)) {
+      if (/rate/i.test(msg)) {
         return 'Слишком много попыток. Подождите минуту и попробуйте снова.';
       }
-      if (code === 'validation_failed' || /valid/i.test(msg)) {
+      if (/valid/i.test(msg)) {
         return 'Некорректный email. Проверьте правильность адреса.';
       }
       if (/network/i.test(msg) || /fetch/i.test(msg)) {
         return 'Нет связи с сервером. Проверьте интернет-соединение.';
       }
-      return `Не удалось создать аккаунт. Проверьте данные и попробуйте снова. (${code || msg})`;
+      return `Не удалось создать аккаунт. Проверьте данные и попробуйте снова. (${msg})`;
     }
     return null;
   };

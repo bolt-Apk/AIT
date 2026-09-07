@@ -122,7 +122,7 @@ app.put<{ Body: { password?: string } }>('/api/profile/password', async (request
   const userId = getUserId(request);
   const password = request.body.password;
   if (!userId) return reply.code(401).send({ error: 'Необходима авторизация' });
-  if (typeof password !== 'string' || password.length < 6) return reply.code(400).send({ error: 'Пароль должен содержать минимум 6 символов' });
+  if (typeof password !== 'string' || password.length < 8) return reply.code(400).send({ error: 'Пароль должен содержать минимум 8 символов' });
   const passwordHash = await bcrypt.hash(password, 12);
   await pool.query('UPDATE app_users SET password_hash = $1, updated_at = now() WHERE id = $2', [passwordHash, userId]);
   return { ok: true };

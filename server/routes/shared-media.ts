@@ -152,15 +152,17 @@ export default function registerSharedMediaRoutes(app: FastifyInstance, pool: Po
     const userId = getUserId(request);
     if (!userId) return reply.code(401).send({ error: 'Необходима авторизация' });
     const { status, result_url, error_message } = request.body as any;
-    const sets: string[] = [];
-    const vals: unknown[] = [];
-    let idx = 1;
-    if (status) { sets.push(`status = ${idx++}`); vals.push(status); }
-    if (result_url) { sets.push(`result_url = ${idx++}`); vals.push(result_url); }
-    if (error_message) { sets.push(`error_message = ${idx++}`); vals.push(error_message); }
-    if (!sets.length) return reply.code(400).send({ error: 'No fields' });
+    const fields: Array<[string, unknown]> = [];
+    if (status) fields.push(['status', status]);
+    if (result_url) fields.push(['result_url', result_url]);
+    if (error_message) fields.push(['error_message', error_message]);
+    if (!fields.length) return reply.code(400).send({ error: 'No fields' });
+    const setClauses = fields.map((f, i) => f[0] + ' = $' + String(i + 1));
+    const vals: unknown[] = fields.map(f => f[1]);
+    const genParam = '$' + String(fields.length + 1);
+    const userParam = '$' + String(fields.length + 2);
     vals.push(request.params.id, userId);
-    await pool.query(`UPDATE pending_generations SET ${sets.join(', ')} WHERE generation_id = ${idx++} AND user_id = ${idx}`, vals);
+    await pool.query('UPDATE pending_generations SET ' + setClauses.join(', ') + ' WHERE generation_id = ' + genParam + ' AND user_id = ' + userParam, vals);
     return { ok: true };
   });
 

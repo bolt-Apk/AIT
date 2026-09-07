@@ -5,6 +5,13 @@ import { mkdirSync, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 
+const ALLOWED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp3', 'wav', 'ogg', 'webm', 'mp4', 'mov', 'avi', 'pdf', 'bin']);
+
+function safeExt(filename: string | undefined, fallback: string): string {
+  const raw = (filename || '').split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || '';
+  return ALLOWED_EXTENSIONS.has(raw) ? raw : fallback;
+}
+
 export default function registerStorageRoutes(app: FastifyInstance, pool: Pool, storageDir: string) {
 
   // TTS audio upload
@@ -26,7 +33,7 @@ export default function registerStorageRoutes(app: FastifyInstance, pool: Pool, 
     if (!userId) return reply.code(401).send({ error: 'Необходима авторизация' });
     const file = await request.file();
     if (!file) return reply.code(400).send({ error: 'Файл не найден' });
-    const ext = file.filename?.split('.').pop() || 'bin';
+    const ext = safeExt(file.filename, 'bin');
     const userDir = path.join(storageDir, 'video-inputs', userId);
     mkdirSync(userDir, { recursive: true });
     const fileName = `${crypto.randomUUID()}.${ext}`;
@@ -40,7 +47,7 @@ export default function registerStorageRoutes(app: FastifyInstance, pool: Pool, 
     if (!userId) return reply.code(401).send({ error: 'Необходима авторизация' });
     const file = await request.file();
     if (!file) return reply.code(400).send({ error: 'Файл не найден' });
-    const ext = file.filename?.split('.').pop() || 'bin';
+    const ext = safeExt(file.filename, 'bin');
     const userDir = path.join(storageDir, 'support-attachments', userId);
     mkdirSync(userDir, { recursive: true });
     const fileName = `${crypto.randomUUID()}.${ext}`;
@@ -54,7 +61,7 @@ export default function registerStorageRoutes(app: FastifyInstance, pool: Pool, 
     if (!userId) return reply.code(401).send({ error: 'Необходима авторизация' });
     const file = await request.file();
     if (!file) return reply.code(400).send({ error: 'Файл не найден' });
-    const ext = file.filename?.split('.').pop() || 'png';
+    const ext = safeExt(file.filename, 'png');
     const userDir = path.join(storageDir, 'images', userId);
     mkdirSync(userDir, { recursive: true });
     const fileName = `${crypto.randomUUID()}.${ext}`;
