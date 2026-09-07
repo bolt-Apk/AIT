@@ -4,7 +4,7 @@ import { getUserId } from '../lib/auth.js';
 import { addTokens } from '../lib/billing.js';
 import crypto from 'node:crypto';
 
-const ALLOWED_ORIGINS = ['https://ai-taip.com', 'https://www.ai-taip.com', 'http://localhost:5173', 'http://localhost:4173'];
+const ALLOWED_ORIGINS = ['https://aitaip.ru', 'https://www.aitaip.ru', 'https://ai-taip.com', 'https://www.ai-taip.com', 'http://localhost:5173', 'http://localhost:4173'];
 
 export default function registerPaymentRoutes(app: FastifyInstance, pool: Pool) {
 

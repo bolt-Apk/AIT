@@ -45,7 +45,8 @@ try {
 }
 
 const app = Fastify({ logger: true });
-await app.register(cors, { origin: process.env.CORS_ORIGIN ?? true, credentials: true });
+const corsOrigin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : true;
+await app.register(cors, { origin: corsOrigin, credentials: true });
 await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
 
 app.addHook('preParsing', async (request, _reply, payload) => {
